@@ -11,6 +11,11 @@ app.use(express.json());
 // Conexión a Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
+// Ruta raíz para evitar "Cannot GET /"
+app.get('/', (req, res) => {
+  res.send('Bienvenido a la API de Stock Sync');
+});
+
 // Ruta de prueba
 app.get('/api/ping', (req, res) => {
   res.json({ message: 'API funcionando correctamente' });
