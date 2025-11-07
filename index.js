@@ -42,6 +42,7 @@ app.post('/api/registro', async (req, res) => {
   res.json({ message: 'Usuario registrado con éxito' });
 });
 
-app.listen(3001, () => {
-  console.log('API corriendo en http://localhost:3001');
+const PORT = process.env.PORT || 3001;
+app.listen(PORT, () => {
+  console.log(`API corriendo en puerto ${PORT}`);
 });
