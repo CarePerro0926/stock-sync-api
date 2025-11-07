@@ -96,22 +96,8 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ message: 'Usuario no encontrado' });
     }
 
-    let match = false;
-
-    if (data.pass.startsWith('$2b$')) {
-      match = await bcrypt.compare(pass, data.pass);
-    } else {
-      match = pass === data.pass;
-
-      if (match) {
-        const hashed = await bcrypt.hash(pass, 10);
-        await supabase
-          .from('usuarios')
-          .update({ pass: hashed })
-          .eq('id', data.id);
-        console.log(`Contraseña migrada para usuario ${data.username}`);
-      }
-    }
+    // ✅ Solo se acepta login con contraseña encriptada
+    const match = await bcrypt.compare(pass, data.pass);
 
     if (!match) {
       return res.status(401).json({ message: 'Contraseña incorrecta' });
