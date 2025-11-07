@@ -47,6 +47,17 @@ app.post('/api/registro', async (req, res) => {
   res.json({ message: 'Usuario registrado con éxito' });
 });
 
+// Ruta para obtener todos los usuarios
+app.get('/api/usuarios', async (req, res) => {
+  const { data, error } = await supabase.from('usuarios').select('*');
+
+  if (error) {
+    return res.status(500).json({ message: 'Error al obtener usuarios', error: error.message });
+  }
+
+  res.json(data);
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`API corriendo en puerto ${PORT}`);
