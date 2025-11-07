@@ -23,28 +23,38 @@ app.get('/api/ping', (req, res) => {
 
 // Ruta para registrar usuario
 app.post('/api/registro', async (req, res) => {
-  const { nombres, apellidos, cedula, fecha, email, user, pass, role } = req.body;
+  const { nombres, apellidos, cedula, fecha, telefono, email, user, pass, role } = req.body;
 
-  if (!nombres || !apellidos || !cedula || !fecha || !email || !user || !pass || !role) {
+  console.log('Datos recibidos:', req.body); // Depuración
+
+  // Validación de campos obligatorios
+  if (!nombres || !apellidos || !cedula || !fecha || !telefono || !email || !user || !pass || !role) {
     return res.status(400).json({ message: 'Faltan campos obligatorios' });
   }
 
-  const { data, error } = await supabase.from('usuarios').insert({
-    nombres,
-    apellidos,
-    cedula,
-    fecha_nacimiento: fecha,
-    email,
-    username: user,
-    pass,
-    role
-  });
+  try {
+    const { data, error } = await supabase.from('usuarios').insert({
+      nombres,
+      apellidos,
+      cedula,
+      fecha_nacimiento: fecha,
+      telefono,
+      email,
+      username: user,
+      pass,
+      role
+    });
 
-  if (error) {
-    return res.status(500).json({ message: 'Error al registrar', error: error.message });
+    if (error) {
+      console.error('Error Supabase:', error); // Verifica en consola
+      return res.status(500).json({ message: 'Error al registrar', error: error.message });
+    }
+
+    res.json({ message: 'Usuario registrado con éxito' });
+  } catch (err) {
+    console.error('Error inesperado:', err); // Verifica en consola
+    res.status(500).json({ message: 'Error inesperado en el servidor', error: err.message });
   }
-
-  res.json({ message: 'Usuario registrado con éxito' });
 });
 
 // Ruta para obtener todos los usuarios
@@ -52,6 +62,7 @@ app.get('/api/usuarios', async (req, res) => {
   const { data, error } = await supabase.from('usuarios').select('*');
 
   if (error) {
+    console.error('Error al obtener usuarios:', error);
     return res.status(500).json({ message: 'Error al obtener usuarios', error: error.message });
   }
 
