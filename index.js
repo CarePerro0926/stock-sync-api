@@ -9,7 +9,10 @@ const app = express();
 
 // CORS para permitir acceso desde Vercel
 app.use(cors({
-  origin: 'https://stock-sync-react.vercel.app',
+  origin: [
+    'https://stock-sync-react.vercel.app', // producción
+    'http://localhost:3000'                // desarrollo local
+  ],
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type']
 }));
