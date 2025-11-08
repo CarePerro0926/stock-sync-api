@@ -7,12 +7,17 @@ require('dotenv').config();
 
 const app = express();
 
-// CORS para permitir acceso desde Vercel
+// Detectar entorno
+const isDev = process.env.NODE_ENV === 'development';
+
+// Orígenes permitidos según entorno
+const allowedOrigins = isDev
+  ? ['http://localhost:3000']
+  : ['https://stock-sync-react.vercel.app'];
+
+// CORS dinámico
 app.use(cors({
-  origin: [
-    'https://stock-sync-react.vercel.app', // producción
-    'http://localhost:3000'                // desarrollo local
-  ],
+  origin: allowedOrigins,
   methods: ['GET', 'POST'],
   allowedHeaders: ['Content-Type']
 }));
@@ -80,7 +85,7 @@ app.get('/api/usuarios', async (req, res) => {
   res.json(data);
 });
 
-// Login con soporte para contraseñas planas y migración automática
+// Login con soporte para contraseñas encriptadas
 app.post('/api/login', async (req, res) => {
   const { user, pass } = req.body;
 
@@ -99,7 +104,6 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ message: 'Usuario no encontrado' });
     }
 
-    // ✅ Solo se acepta login con contraseña encriptada
     const match = await bcrypt.compare(pass, data.pass);
 
     if (!match) {
