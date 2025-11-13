@@ -46,6 +46,13 @@ app.post('/api/registro', async (req, res) => {
     return res.status(400).json({ message: 'Faltan campos obligatorios' });
   }
 
+  // 🚫 Validación: clientes no pueden usar correos @stocksync.com
+  if (role === 'cliente' && email.endsWith('@stocksync.com')) {
+    return res.status(400).json({
+      message: 'Los clientes no pueden usar correos @stocksync.com'
+    });
+  }
+
   try {
     const hashedPass = await bcrypt.hash(pass, 10);
 
