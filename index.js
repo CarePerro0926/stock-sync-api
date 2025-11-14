@@ -46,10 +46,17 @@ app.post('/api/registro', async (req, res) => {
     return res.status(400).json({ message: 'Faltan campos obligatorios' });
   }
 
-  // 🚫 Validación: clientes no pueden usar correos @stocksync.com
+  // Validación 1: clientes no pueden usar correos @stocksync.com
   if (role === 'cliente' && email.endsWith('@stocksync.com')) {
     return res.status(400).json({
       message: 'Los clientes no pueden usar correos @stocksync.com'
+    });
+  }
+
+  // Validación 2: administradores deben usar correos @stocksync.com
+  if (role === 'admin' && !email.endsWith('@stocksync.com')) {
+    return res.status(400).json({
+      message: 'Los administradores deben usar correos @stocksync.com'
     });
   }
 
