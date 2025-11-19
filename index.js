@@ -1,4 +1,3 @@
-// index.js
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
@@ -18,7 +17,7 @@ const allowedOrigins = isDev
 // CORS dinámico
 app.use(cors({
   origin: allowedOrigins,
-  methods: ['GET', 'POST'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type']
 }));
 app.use(express.json());
@@ -36,28 +35,20 @@ app.get('/api/ping', (req, res) => {
   res.json({ message: 'API funcionando correctamente' });
 });
 
-// Registro de usuario con contraseña encriptada
+// Registro de usuario
 app.post('/api/registro', async (req, res) => {
   const { nombres, apellidos, cedula, fecha, telefono, email, user, pass, role } = req.body;
-
-  console.log('Datos recibidos:', req.body);
 
   if (!nombres || !apellidos || !cedula || !fecha || !telefono || !email || !user || !pass || !role) {
     return res.status(400).json({ message: 'Faltan campos obligatorios' });
   }
 
-  // Validación 1: clientes no pueden usar correos @stocksync.com
   if (role === 'cliente' && email.endsWith('@stocksync.com')) {
-    return res.status(400).json({
-      message: 'Los clientes no pueden usar correos @stocksync.com'
-    });
+    return res.status(400).json({ message: 'Los clientes no pueden usar correos @stocksync.com' });
   }
 
-  // Validación 2: administradores deben usar correos @stocksync.com
   if (role === 'admin' && !email.endsWith('@stocksync.com')) {
-    return res.status(400).json({
-      message: 'Los administradores deben usar correos @stocksync.com'
-    });
+    return res.status(400).json({ message: 'Los administradores deben usar correos @stocksync.com' });
   }
 
   try {
@@ -87,19 +78,7 @@ app.post('/api/registro', async (req, res) => {
   }
 });
 
-// Obtener todos los usuarios
-app.get('/api/usuarios', async (req, res) => {
-  const { data, error } = await supabase.from('usuarios').select('*');
-
-  if (error) {
-    console.error('Error al obtener usuarios:', error);
-    return res.status(500).json({ message: 'Error al obtener usuarios', error: error.message });
-  }
-
-  res.json(data);
-});
-
-// Login con soporte para contraseñas encriptadas
+// Login de usuario
 app.post('/api/login', async (req, res) => {
   const { user, pass } = req.body;
 
@@ -129,6 +108,69 @@ app.post('/api/login', async (req, res) => {
     console.error('Error inesperado en login:', err);
     res.status(500).json({ message: 'Error inesperado en el servidor', error: err.message });
   }
+});
+
+// Obtener todos los usuarios
+app.get('/api/usuarios', async (req, res) => {
+  const { data, error } = await supabase.from('usuarios').select('*');
+
+  if (error) {
+    console.error('Error al obtener usuarios:', error);
+    return res.status(500).json({ message: 'Error al obtener usuarios', error: error.message });
+  }
+
+  res.json(data);
+});
+
+// Obtener usuario por ID
+app.get('/api/usuarios/:id', async (req, res) => {
+  const { id } = req.params;
+
+  const { data, error } = await supabase
+    .from('usuarios')
+    .select('*')
+    .eq('id', id)
+    .single();
+
+  if (error || !data) {
+    return res.status(404).json({ message: 'Usuario no encontrado', error: error?.message });
+  }
+
+  res.json(data);
+});
+
+// Actualizar usuario por ID
+app.put('/api/usuarios/:id', async (req, res) => {
+  const { id } = req.params;
+  const updates = req.body;
+
+  const { data, error } = await supabase
+    .from('usuarios')
+    .update(updates)
+    .eq('id', id)
+    .select();
+
+  if (error) {
+    return res.status(500).json({ message: 'Error al actualizar usuario', error: error.message });
+  }
+
+  res.json({ message: 'Usuario actualizado', data });
+});
+
+// Eliminar usuario por ID
+app.delete('/api/usuarios/:id', async (req, res) => {
+  const { id } = req.params;
+
+  const { error } = await supabase
+    .from('usuarios')
+    .delete()
+    .eq('id', id);
+
+  if (error) {
+    return res.status(500).json({ message: 'Error al eliminar usuario', error: error.message });
+  }
+
+  res.json({ message: 'Usuario eliminado' });
 });
 
 // Puerto dinámico para Render
