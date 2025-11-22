@@ -1,4 +1,4 @@
-// server.js
+// index.js (servidor principal)
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcrypt');
@@ -12,7 +12,7 @@ const allowedOrigins = isDev
   ? ['http://localhost:3000']
   : ['https://stock-sync-react.vercel.app'];
 
-// CORS manual: garantizar PATCH y respuesta al preflight
+// CORS manual con soporte de PATCH y preflight
 app.use((req, res, next) => {
   const origin = req.headers.origin;
   if (origin && allowedOrigins.includes(origin)) {
@@ -22,22 +22,20 @@ app.use((req, res, next) => {
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
-
-  if (req.method === 'OPTIONS') {
-    // Preflight OK: no continuar a rutas
-    return res.sendStatus(204);
-  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
 app.use(express.json());
 
-// Supabase
+// Supabase client (usa keys del backend; ideal service_role si requieres bypass RLS)
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// Rutas
+// Rutas base y health
 app.get('/', (_, res) => res.send('Bienvenido a la API de Stock Sync'));
 app.get('/api/ping', (_, res) => res.json({ message: 'API funcionando correctamente' }));
+
+/* -------------------- RUTAS USUARIOS -------------------- */
 
 // Registro
 app.post('/api/registro', async (req, res) => {
@@ -137,54 +135,31 @@ app.delete('/api/usuarios/:id', async (req, res) => {
   }
 });
 
-// Inhabilitar (PATCH) - versión con logging y respuesta detallada (temporal)
+// Inhabilitar usuario (PATCH)
 app.patch('/api/usuarios/:id/disable', async (req, res) => {
   const { id } = req.params;
   try {
-    // 1) comprobar existencia del usuario
     const { data: existing, error: errCheck } = await supabase
-      .from('usuarios')
-      .select('id')
-      .eq('id', id)
-      .single();
+      .from('usuarios').select('id').eq('id', id).single();
+    if (errCheck) return res.status(500).json({ message: 'Error comprobando usuario', error: errCheck.message || errCheck });
+    if (!existing) return res.status(404).json({ message: 'Usuario no encontrado' });
 
-    if (errCheck) {
-      console.error('Error comprobando existencia usuario:', errCheck);
-      return res.status(500).json({ message: 'Error comprobando usuario', error: errCheck.message || errCheck });
-    }
-    if (!existing) {
-      return res.status(404).json({ message: 'Usuario no encontrado' });
-    }
-
-    // 2) intentar actualizar deleted_at
     const { data, error } = await supabase
-      .from('usuarios')
-      .update({ deleted_at: new Date().toISOString() })
-      .eq('id', id)
-      .select();
+      .from('usuarios').update({ deleted_at: new Date().toISOString() }).eq('id', id).select();
+    if (error) return res.status(500).json({ message: 'No se pudo inhabilitar el usuario', error: error.message });
 
-    if (error) {
-      // mostramos el error devuelto por Supabase en la respuesta para que lo veas en la UI
-      console.error('Supabase error al inhabilitar usuario:', error);
-      return res.status(500).json({ message: 'No se pudo inhabilitar el usuario', error: error.message || error });
-    }
-
-    return res.json({ ok: true, data });
+    res.json({ ok: true, data });
   } catch (err) {
-    console.error('Excepción en /api/usuarios/:id/disable:', err);
-    return res.status(500).json({ message: 'Error inesperado', error: err.message || String(err) });
+    res.status(500).json({ message: 'Error inesperado', error: err.message || String(err) });
   }
 });
 
-// Reactivar (PATCH)
+// Reactivar usuario (PATCH)
 app.patch('/api/usuarios/:id/enable', async (req, res) => {
   const { id } = req.params;
   try {
     const { data, error } = await supabase
-      .from('usuarios')
-      .update({ deleted_at: null })
-      .eq('id', id)
-      .select();
+      .from('usuarios').update({ deleted_at: null }).eq('id', id).select();
     if (error) return res.status(500).json({ message: 'No se pudo reactivar el usuario', error: error.message });
     res.json({ ok: true, data });
   } catch (err) {
@@ -192,7 +167,17 @@ app.patch('/api/usuarios/:id/enable', async (req, res) => {
   }
 });
 
-// Puerto
+/* -------------------- RUTAS PRODUCTOS -------------------- */
+
+// Importa y monta el router de productos
+// Si tu archivo está en ./routes/productos.js, cambia la ruta a require('./routes/productos')
+const productosRouter = require('./productos');
+app.use('/api/productos', productosRouter);
+
+/* -------------------- 404 AL FINAL -------------------- */
+app.use((req, res) => res.status(404).json({ message: 'Ruta no encontrada' }));
+
+/* -------------------- PUERTO -------------------- */
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`API corriendo en puerto ${PORT}`);
