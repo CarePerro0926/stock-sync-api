@@ -28,7 +28,7 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// Supabase client
+// Supabase client (para rutas directas en este archivo, p.ej. usuarios)
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // Rutas base y health
@@ -168,7 +168,7 @@ app.patch('/api/usuarios/:id/enable', async (req, res) => {
 });
 
 /* -------------------- RUTAS PRODUCTOS -------------------- */
-// IMPORTANTE: ajusta la ruta del require a donde esté productos.js
+// Ajusta la ruta del require a donde esté productos.js
 const productosRouter = require('./productos'); // o './routes/productos'
 app.use('/api/productos', productosRouter);
 
