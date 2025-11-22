@@ -73,25 +73,44 @@ app.use((req, res, next) => {
 /**
  * POST /api/login
  *
- * Implementación mínima usando la tabla 'usuarios' para validar credenciales.
- * - Requiere que en la tabla 'usuarios' exista una columna con el email y una columna
- *   con el hash de la contraseña (por ejemplo 'password_hash').
- * - En producción deberías usar Supabase Auth o un flujo de autenticación robusto.
- * - Asegúrate de definir JWT_SECRET en variables de entorno para firmar tokens.
+ * Ahora acepta:
+ * - { email, password }
+ * - { username, password }
+ * - { user, pass }   (compatibilidad con frontend antiguo)
+ *
+ * Busca el usuario por email o username y verifica bcrypt hash.
  */
 app.post('/api/login', async (req, res) => {
   try {
-    const { email, password } = req.body || {};
-    if (!email || !password) {
+    // Normalizar campos sin imprimir contraseñas en logs
+    const body = req.body || {};
+    const email = body.email || null;
+    const username = body.username || body.user || null;
+    const password = body.password || body.pass || null;
+
+    // Log seguro: no mostrar password, solo qué tipo de identificador llegó
+    const identifierType = email ? 'email' : username ? 'username' : 'none';
+    console.log(`POST /api/login - identifierType: ${identifierType}`);
+
+    if (!password || (!email && !username)) {
       return res.status(400).json({ success: false, message: 'Faltan credenciales' });
     }
 
-    // Buscar usuario por email en la tabla 'usuarios'
-    const { data: users, error: selectError } = await supabaseAdmin
-      .from('usuarios')
-      .select('id, email, password_hash, nombre')
-      .eq('email', email)
-      .limit(1);
+    const identifier = email || username;
+
+    // Construir consulta: si es email, buscar por email; si no, buscar por username o email
+    let query = supabaseAdmin.from('usuarios').select('id, email, username, password_hash, nombre').limit(1);
+
+    if (email) {
+      query = query.eq('email', identifier);
+    } else {
+      // buscar por username o email (por si hay usuarios con username igual al email)
+      // usamos .or con valores entre comillas para evitar problemas con caracteres
+      const safe = identifier.replace(/"/g, '\\"');
+      query = query.or(`username.eq."${safe}",email.eq."${safe}"`).limit(1);
+    }
+
+    const { data: users, error: selectError } = await query;
 
     if (selectError) {
       console.error('POST /api/login - supabase error:', selectError.message);
@@ -127,7 +146,7 @@ app.post('/api/login', async (req, res) => {
     return res.status(200).json({
       success: true,
       token,
-      user: { id: user.id, email: user.email, nombre: user.nombre || null },
+      user: { id: user.id, email: user.email, username: user.username || null, nombre: user.nombre || null },
     });
   } catch (err) {
     console.error('POST /api/login error:', err);
