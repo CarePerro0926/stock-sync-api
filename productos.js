@@ -1,21 +1,18 @@
-// routes/productos.js
+// productos.js
 const express = require('express');
 const router = express.Router();
 const { createClient } = require('@supabase/supabase-js');
 
-// Usa la clave SERVICE_ROLE en backend para evitar bloqueos por RLS
-// Configura en tu entorno: SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY
+// En backend usa la clave SERVICE_ROLE para evitar bloqueos por RLS
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
-// GET productos: devuelve activos por defecto; si include_inactive=true, devuelve todos
+// GET: activos por defecto; include_inactive=true devuelve todos
 router.get('/', async (req, res) => {
   const includeInactive = String(req.query.include_inactive || '').toLowerCase() === 'true';
   try {
     let query = supabase.from('productos').select('*').order('nombre', { ascending: true });
-    if (!includeInactive) {
-      // Solo activos: deleted_at IS NULL
-      query = query.is('deleted_at', null);
-    }
+    if (!includeInactive) query = query.is('deleted_at', null);
+
     const { data, error } = await query;
     if (error) return res.status(500).json({ message: 'Error al obtener productos', error: error.message });
     res.json(data || []);
@@ -63,12 +60,8 @@ router.delete('/:id', async (req, res) => {
 router.patch('/:id/disable', async (req, res) => {
   const { id } = req.params;
   try {
-    // Verificar existencia (opcional)
     const { data: exists, error: errCheck } = await supabase
-      .from('productos')
-      .select('id')
-      .eq('id', id)
-      .single();
+      .from('productos').select('id').eq('id', id).single();
     if (errCheck) return res.status(500).json({ message: 'Error comprobando producto', error: errCheck.message || errCheck });
     if (!exists) return res.status(404).json({ message: 'Producto no encontrado' });
 
