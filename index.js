@@ -28,7 +28,7 @@ app.use((req, res, next) => {
 
 app.use(express.json());
 
-// Supabase client (usa keys del backend; ideal service_role si requieres bypass RLS)
+// Supabase client
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // Rutas base y health
@@ -168,10 +168,8 @@ app.patch('/api/usuarios/:id/enable', async (req, res) => {
 });
 
 /* -------------------- RUTAS PRODUCTOS -------------------- */
-
-// Importa y monta el router de productos
-// Si tu archivo está en ./routes/productos.js, cambia la ruta a require('./routes/productos')
-const productosRouter = require('./productos');
+// IMPORTANTE: ajusta la ruta del require a donde esté productos.js
+const productosRouter = require('./productos'); // o './routes/productos'
 app.use('/api/productos', productosRouter);
 
 /* -------------------- 404 AL FINAL -------------------- */
