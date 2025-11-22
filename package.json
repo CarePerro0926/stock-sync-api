@@ -2,6 +2,7 @@
   "name": "stock-sync-api",
   "version": "1.0.0",
   "description": "API para registrar usuarios y conectar con Supabase",
+  "type": "module",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
