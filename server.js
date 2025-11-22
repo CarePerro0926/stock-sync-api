@@ -15,11 +15,16 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'x-admin-token', 'authorization'],
   exposedHeaders: ['Content-Type', 'x-admin-token'],
   credentials: true,
-  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']
+  methods: ['GET','POST','PATCH','PUT','DELETE','OPTIONS']
 }));
 
-// Responder OPTIONS para preflight (seguro y explícito)
-app.options('*', (req, res) => res.sendStatus(204));
+// Manejo seguro de preflight OPTIONS sin registrar rutas con '*'
+app.use((req, res, next) => {
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
 
 // Soporta ambos nombres de variable por compatibilidad
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -32,12 +37,10 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
-// Validación simple de admin por header x-admin-token (acepta mayúsculas/minúsculas)
+// Validación simple de admin por header x-admin-token
 const isAdminRequest = (req) => {
-  // Express lowercases header names; soportamos también Authorization bearer si se desea
-  const token = req.headers['x-admin-token'] || req.headers['X-Admin-Token'] || null;
+  const token = req.headers['x-admin-token'] || null;
   if (!process.env.ADMIN_API_TOKEN) {
-    // Si no hay token configurado en el entorno, rechazamos y lo dejamos claro en logs
     console.warn('ADMIN_API_TOKEN no está definido en variables de entorno; todas las peticiones admin serán rechazadas.');
     return false;
   }
@@ -50,9 +53,11 @@ const respondError = (res, status = 500, message = 'Error interno', details = nu
   return res.status(status).json(payload);
 };
 
-// Middleware opcional de logging simple (útil para debugging en Render)
+// Logging temporal y verificación de header (enmascarado)
 app.use((req, res, next) => {
-  console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
+  const raw = req.headers['x-admin-token'] || null;
+  const masked = raw ? `${raw.slice(0,4)}...${raw.slice(-4)}` : null;
+  console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl} - x-admin-token present: ${!!raw} masked: ${masked}`);
   next();
 });
 
@@ -80,7 +85,7 @@ app.get('/api/productos', async (req, res) => {
   }
 });
 
-// GET lista de usuarios (handler mínimo para que el frontend no falle)
+// GET lista de usuarios (handler mínimo)
 app.get('/api/usuarios', async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
