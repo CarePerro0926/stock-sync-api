@@ -137,19 +137,42 @@ app.delete('/api/usuarios/:id', async (req, res) => {
   }
 });
 
-// Inhabilitar (PATCH)
+// Inhabilitar (PATCH) - versión con logging y respuesta detallada (temporal)
 app.patch('/api/usuarios/:id/disable', async (req, res) => {
   const { id } = req.params;
   try {
+    // 1) comprobar existencia del usuario
+    const { data: existing, error: errCheck } = await supabase
+      .from('usuarios')
+      .select('id')
+      .eq('id', id)
+      .single();
+
+    if (errCheck) {
+      console.error('Error comprobando existencia usuario:', errCheck);
+      return res.status(500).json({ message: 'Error comprobando usuario', error: errCheck.message || errCheck });
+    }
+    if (!existing) {
+      return res.status(404).json({ message: 'Usuario no encontrado' });
+    }
+
+    // 2) intentar actualizar deleted_at
     const { data, error } = await supabase
       .from('usuarios')
       .update({ deleted_at: new Date().toISOString() })
       .eq('id', id)
       .select();
-    if (error) return res.status(500).json({ message: 'No se pudo inhabilitar el usuario', error: error.message });
-    res.json({ ok: true, data });
+
+    if (error) {
+      // mostramos el error devuelto por Supabase en la respuesta para que lo veas en la UI
+      console.error('Supabase error al inhabilitar usuario:', error);
+      return res.status(500).json({ message: 'No se pudo inhabilitar el usuario', error: error.message || error });
+    }
+
+    return res.json({ ok: true, data });
   } catch (err) {
-    res.status(500).json({ message: 'Error inesperado', error: err.message });
+    console.error('Excepción en /api/usuarios/:id/disable:', err);
+    return res.status(500).json({ message: 'Error inesperado', error: err.message || String(err) });
   }
 });
 
