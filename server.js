@@ -10,8 +10,9 @@ app.use(express.json());
 app.use(helmet());
 app.use(cors({ origin: process.env.FRONTEND_ORIGIN || '*' }));
 
+// Soporta ambos nombres de variable por compatibilidad
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY;
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
   console.error('Falta SUPABASE_URL o SUPABASE_SERVICE_KEY en variables de entorno');
@@ -32,11 +33,17 @@ const respondError = (res, status = 500, message = 'Error interno', details = nu
   return res.status(status).json(payload);
 };
 
+// Middleware opcional de logging simple (útil para debugging en Render)
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl}`);
+  next();
+});
+
 // GET lista de productos
 app.get('/api/productos', async (req, res) => {
   try {
     console.log('GET /api/productos - SUPABASE_URL present:', !!process.env.SUPABASE_URL);
-    console.log('GET /api/productos - SUPABASE_SERVICE_KEY present:', !!process.env.SUPABASE_SERVICE_KEY);
+    console.log('GET /api/productos - SUPABASE_SERVICE_KEY present:', !!SUPABASE_SERVICE_KEY);
 
     const { data, error } = await supabaseAdmin
       .from('productos')
@@ -49,10 +56,32 @@ app.get('/api/productos', async (req, res) => {
     }
 
     console.log('GET /api/productos - returned rows:', Array.isArray(data) ? data.length : 0);
-    return res.status(200).json(data);
+    return res.status(200).json(data || []);
   } catch (err) {
     console.error('API exception GET /api/productos:', err);
     return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+// GET lista de usuarios (handler mínimo para que el frontend no falle)
+// Si tienes tabla "usuarios" en Supabase, descomenta la consulta real y comenta el fallback.
+app.get('/api/usuarios', async (req, res) => {
+  try {
+    // Intentamos leer la tabla usuarios; si falla devolvemos array vacío como fallback
+    const { data, error } = await supabaseAdmin
+      .from('usuarios')
+      .select('*')
+      .order('id', { ascending: true });
+
+    if (error) {
+      console.warn('GET /api/usuarios - supabase returned error, returning empty array:', error.message);
+      return res.status(200).json([]);
+    }
+
+    return res.status(200).json(data || []);
+  } catch (err) {
+    console.warn('GET /api/usuarios - exception, returning empty array:', String(err));
+    return res.status(200).json([]);
   }
 });
 
@@ -72,7 +101,6 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
       return respondError(res, 500, 'No se pudo inhabilitar el producto', error.message);
     }
 
-    // Si la query puede devolver múltiples filas, devolver el array; si solo una, devolver el primer elemento
     const result = Array.isArray(data) ? data : [data];
     return res.status(200).json({ success: true, data: result });
   } catch (err) {
