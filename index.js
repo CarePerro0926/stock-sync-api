@@ -1,3 +1,4 @@
+// server.js (o index.js)
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
@@ -14,15 +15,17 @@ const allowedOrigins = isDev
   ? ['http://localhost:3000']
   : ['https://stock-sync-react.vercel.app'];
 
-// CORS dinámico
+// CORS: permitir PATCH y responder preflight
 app.use(cors({
   origin: allowedOrigins,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
+app.options('*', cors());
+
 app.use(express.json());
 
-// Conexión a Supabase
+// Conexión a Supabase (usa la key que tengas configurada)
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // Ruta raíz
@@ -47,7 +50,7 @@ app.post('/api/registro', async (req, res) => {
     return res.status(400).json({ message: 'Los clientes no pueden usar correos @stocksync.com' });
   }
 
-  if (role === 'admin' && !email.endsWith('@stocksync.com')) {
+  if ((role === 'admin' || role === 'administrador') && !email.endsWith('@stocksync.com')) {
     return res.status(400).json({ message: 'Los administradores deben usar correos @stocksync.com' });
   }
 
@@ -98,7 +101,6 @@ app.post('/api/login', async (req, res) => {
     }
 
     const match = await bcrypt.compare(pass, data.pass);
-
     if (!match) {
       return res.status(401).json({ message: 'Contraseña incorrecta' });
     }
@@ -112,65 +114,125 @@ app.post('/api/login', async (req, res) => {
 
 // Obtener todos los usuarios
 app.get('/api/usuarios', async (req, res) => {
-  const { data, error } = await supabase.from('usuarios').select('*');
-
-  if (error) {
-    console.error('Error al obtener usuarios:', error);
-    return res.status(500).json({ message: 'Error al obtener usuarios', error: error.message });
+  try {
+    const { data, error } = await supabase.from('usuarios').select('*');
+    if (error) {
+      console.error('Error al obtener usuarios:', error);
+      return res.status(500).json({ message: 'Error al obtener usuarios', error: error.message });
+    }
+    res.json(data);
+  } catch (err) {
+    console.error('Error inesperado /api/usuarios:', err);
+    res.status(500).json({ message: 'Error inesperado', error: err.message });
   }
-
-  res.json(data);
 });
 
 // Obtener usuario por ID
 app.get('/api/usuarios/:id', async (req, res) => {
   const { id } = req.params;
+  try {
+    const { data, error } = await supabase
+      .from('usuarios')
+      .select('*')
+      .eq('id', id)
+      .single();
 
-  const { data, error } = await supabase
-    .from('usuarios')
-    .select('*')
-    .eq('id', id)
-    .single();
-
-  if (error || !data) {
-    return res.status(404).json({ message: 'Usuario no encontrado', error: error?.message });
+    if (error || !data) {
+      return res.status(404).json({ message: 'Usuario no encontrado', error: error?.message });
+    }
+    res.json(data);
+  } catch (err) {
+    console.error('Error inesperado /api/usuarios/:id:', err);
+    res.status(500).json({ message: 'Error inesperado', error: err.message });
   }
-
-  res.json(data);
 });
 
-// Actualizar usuario por ID
+// Actualizar usuario por ID (PUT)
 app.put('/api/usuarios/:id', async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
 
-  const { data, error } = await supabase
-    .from('usuarios')
-    .update(updates)
-    .eq('id', id)
-    .select();
+  try {
+    const { data, error } = await supabase
+      .from('usuarios')
+      .update(updates)
+      .eq('id', id)
+      .select();
 
-  if (error) {
-    return res.status(500).json({ message: 'Error al actualizar usuario', error: error.message });
+    if (error) {
+      return res.status(500).json({ message: 'Error al actualizar usuario', error: error.message });
+    }
+    res.json({ message: 'Usuario actualizado', data });
+  } catch (err) {
+    console.error('Error inesperado PUT /api/usuarios/:id:', err);
+    res.status(500).json({ message: 'Error inesperado', error: err.message });
   }
-
-  res.json({ message: 'Usuario actualizado', data });
 });
 
 // Eliminar usuario por ID
 app.delete('/api/usuarios/:id', async (req, res) => {
   const { id } = req.params;
+  try {
+    const { error } = await supabase
+      .from('usuarios')
+      .delete()
+      .eq('id', id);
 
-  const { error } = await supabase
-    .from('usuarios')
-    .delete()
-    .eq('id', id);
+    if (error) {
+      return res.status(500).json({ message: 'Error al eliminar usuario', error: error.message });
+    }
 
-  if (error) {
-    return res.status(500).json({ message: 'Error al eliminar usuario', error: error.message });
+    res.json({ message: 'Usuario eliminado' });
+  } catch (err) {
+    console.error('Error inesperado DELETE /api/usuarios/:id:', err);
+    res.status(500).json({ message: 'Error inesperado', error: err.message });
   }
+});
 
-  res.json({ message: 'Usuario eliminado' });
+// Inhabilitar usuario (soft delete): PATCH /disable
+app.patch('/api/usuarios/:id/disable', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const payload = { deleted_at: new Date().toISOString() };
+    const { data, error } = await supabase
+      .from('usuarios')
+      .update(payload)
+      .eq('id', id)
+      .select();
+
+    if (error) {
+      console.error('Error al inhabilitar:', error);
+      return res.status(500).json({ message: 'No se pudo inhabilitar el usuario', error: error.message });
+    }
+
+    res.json({ ok: true, data });
+  } catch (err) {
+    console.error('Error inesperado PATCH /disable:', err);
+    res.status(500).json({ message: 'Error inesperado', error: err.message });
+  }
+});
+
+// Reactivar usuario (soft delete): PATCH /enable
+app.patch('/api/usuarios/:id/enable', async (req, res) => {
+  const { id } = req.params;
+  try {
+    const payload = { deleted_at: null };
+    const { data, error } = await supabase
+      .from('usuarios')
+      .update(payload)
+      .eq('id', id)
+      .select();
+
+    if (error) {
+      console.error('Error al reactivar:', error);
+      return res.status(500).json({ message: 'No se pudo reactivar el usuario', error: error.message });
+    }
+
+    res.json({ ok: true, data });
+  } catch (err) {
+    console.error('Error inesperado PATCH /enable:', err);
+    res.status(500).json({ message: 'Error inesperado', error: err.message });
+  }
 });
 
 // Puerto dinámico para Render
