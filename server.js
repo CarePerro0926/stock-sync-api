@@ -8,7 +8,18 @@ import { createClient } from '@supabase/supabase-js';
 const app = express();
 app.use(express.json());
 app.use(helmet());
-app.use(cors({ origin: process.env.FRONTEND_ORIGIN || '*' }));
+
+// CORS: permitir header personalizado x-admin-token y credenciales si se usan
+app.use(cors({
+  origin: process.env.FRONTEND_ORIGIN || '*',
+  allowedHeaders: ['Content-Type', 'x-admin-token', 'authorization'],
+  exposedHeaders: ['Content-Type', 'x-admin-token'],
+  credentials: true,
+  methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS']
+}));
+
+// Responder OPTIONS para preflight (seguro y explícito)
+app.options('*', (req, res) => res.sendStatus(204));
 
 // Soporta ambos nombres de variable por compatibilidad
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -21,10 +32,16 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
-// Validación simple de admin por header x-admin-token
+// Validación simple de admin por header x-admin-token (acepta mayúsculas/minúsculas)
 const isAdminRequest = (req) => {
-  const token = req.headers['x-admin-token'];
-  return token && process.env.ADMIN_API_TOKEN && token === process.env.ADMIN_API_TOKEN;
+  // Express lowercases header names; soportamos también Authorization bearer si se desea
+  const token = req.headers['x-admin-token'] || req.headers['X-Admin-Token'] || null;
+  if (!process.env.ADMIN_API_TOKEN) {
+    // Si no hay token configurado en el entorno, rechazamos y lo dejamos claro en logs
+    console.warn('ADMIN_API_TOKEN no está definido en variables de entorno; todas las peticiones admin serán rechazadas.');
+    return false;
+  }
+  return !!token && token === process.env.ADMIN_API_TOKEN;
 };
 
 const respondError = (res, status = 500, message = 'Error interno', details = null) => {
@@ -42,7 +59,7 @@ app.use((req, res, next) => {
 // GET lista de productos
 app.get('/api/productos', async (req, res) => {
   try {
-    console.log('GET /api/productos - SUPABASE_URL present:', !!process.env.SUPABASE_URL);
+    console.log('GET /api/productos - SUPABASE_URL present:', !!SUPABASE_URL);
     console.log('GET /api/productos - SUPABASE_SERVICE_KEY present:', !!SUPABASE_SERVICE_KEY);
 
     const { data, error } = await supabaseAdmin
@@ -64,10 +81,8 @@ app.get('/api/productos', async (req, res) => {
 });
 
 // GET lista de usuarios (handler mínimo para que el frontend no falle)
-// Si tienes tabla "usuarios" en Supabase, descomenta la consulta real y comenta el fallback.
 app.get('/api/usuarios', async (req, res) => {
   try {
-    // Intentamos leer la tabla usuarios; si falla devolvemos array vacío como fallback
     const { data, error } = await supabaseAdmin
       .from('usuarios')
       .select('*')
@@ -87,7 +102,11 @@ app.get('/api/usuarios', async (req, res) => {
 
 // PATCH disable
 app.patch('/api/productos/:id/disable', async (req, res) => {
-  if (!isAdminRequest(req)) return respondError(res, 403, 'Forbidden');
+  if (!isAdminRequest(req)) {
+    console.warn('PATCH disable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
+    return respondError(res, 403, 'Forbidden');
+  }
+
   const { id } = req.params;
   try {
     const { data, error } = await supabaseAdmin
@@ -111,7 +130,11 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
 
 // PATCH enable
 app.patch('/api/productos/:id/enable', async (req, res) => {
-  if (!isAdminRequest(req)) return respondError(res, 403, 'Forbidden');
+  if (!isAdminRequest(req)) {
+    console.warn('PATCH enable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
+    return respondError(res, 403, 'Forbidden');
+  }
+
   const { id } = req.params;
   try {
     const { data, error } = await supabaseAdmin
