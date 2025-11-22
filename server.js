@@ -3,6 +3,9 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import path from 'path';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
 
 const app = express();
@@ -10,13 +13,15 @@ app.use(express.json());
 app.use(helmet());
 
 // CORS: permitir header personalizado x-admin-token y credenciales si se usan
-app.use(cors({
-  origin: process.env.FRONTEND_ORIGIN || '*',
-  allowedHeaders: ['Content-Type', 'x-admin-token', 'authorization'],
-  exposedHeaders: ['Content-Type', 'x-admin-token'],
-  credentials: true,
-  methods: ['GET','POST','PATCH','PUT','DELETE','OPTIONS']
-}));
+app.use(
+  cors({
+    origin: process.env.FRONTEND_ORIGIN || '*',
+    allowedHeaders: ['Content-Type', 'x-admin-token', 'authorization'],
+    exposedHeaders: ['Content-Type', 'x-admin-token'],
+    credentials: true,
+    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
+  })
+);
 
 // Manejo seguro de preflight OPTIONS sin registrar rutas con '*'
 app.use((req, res, next) => {
@@ -41,7 +46,9 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 const isAdminRequest = (req) => {
   const token = req.headers['x-admin-token'] || null;
   if (!process.env.ADMIN_API_TOKEN) {
-    console.warn('ADMIN_API_TOKEN no está definido en variables de entorno; todas las peticiones admin serán rechazadas.');
+    console.warn(
+      'ADMIN_API_TOKEN no está definido en variables de entorno; todas las peticiones admin serán rechazadas.'
+    );
     return false;
   }
   return !!token && token === process.env.ADMIN_API_TOKEN;
@@ -56,9 +63,76 @@ const respondError = (res, status = 500, message = 'Error interno', details = nu
 // Logging temporal y verificación de header (enmascarado)
 app.use((req, res, next) => {
   const raw = req.headers['x-admin-token'] || null;
-  const masked = raw ? `${raw.slice(0,4)}...${raw.slice(-4)}` : null;
-  console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl} - x-admin-token present: ${!!raw} masked: ${masked}`);
+  const masked = raw ? `${raw.slice(0, 4)}...${raw.slice(-4)}` : null;
+  console.log(
+    `${new Date().toISOString()} ${req.method} ${req.originalUrl} - x-admin-token present: ${!!raw} masked: ${masked}`
+  );
   next();
+});
+
+/**
+ * POST /api/login
+ *
+ * Implementación mínima usando la tabla 'usuarios' para validar credenciales.
+ * - Requiere que en la tabla 'usuarios' exista una columna con el email y una columna
+ *   con el hash de la contraseña (por ejemplo 'password_hash').
+ * - En producción deberías usar Supabase Auth o un flujo de autenticación robusto.
+ * - Asegúrate de definir JWT_SECRET en variables de entorno para firmar tokens.
+ */
+app.post('/api/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) {
+      return res.status(400).json({ success: false, message: 'Faltan credenciales' });
+    }
+
+    // Buscar usuario por email en la tabla 'usuarios'
+    const { data: users, error: selectError } = await supabaseAdmin
+      .from('usuarios')
+      .select('id, email, password_hash, nombre')
+      .eq('email', email)
+      .limit(1);
+
+    if (selectError) {
+      console.error('POST /api/login - supabase error:', selectError.message);
+      return respondError(res, 500, 'Error al consultar usuario', selectError.message);
+    }
+
+    const user = Array.isArray(users) && users.length > 0 ? users[0] : null;
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    }
+
+    // Verificar contraseña (se asume que password_hash contiene bcrypt hash)
+    const storedHash = user.password_hash || user.passwordHash || null;
+    if (!storedHash) {
+      console.warn('POST /api/login - usuario sin password_hash en DB');
+      return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    }
+
+    const passwordMatches = await bcrypt.compare(password, storedHash);
+    if (!passwordMatches) {
+      return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    }
+
+    // Generar JWT (reemplaza por tu estrategia de tokens si usas otra)
+    const jwtSecret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
+    if (!jwtSecret) {
+      console.warn('JWT_SECRET no definido; devolviendo token temporal (no recomendado en producción)');
+    }
+    const tokenPayload = { sub: user.id, email: user.email };
+    const token = jwtSecret ? jwt.sign(tokenPayload, jwtSecret, { expiresIn: '8h' }) : 'token-temporal';
+
+    // Responder con token y datos públicos del usuario
+    return res.status(200).json({
+      success: true,
+      token,
+      user: { id: user.id, email: user.email, nombre: user.nombre || null },
+    });
+  } catch (err) {
+    console.error('POST /api/login error:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
 });
 
 // GET lista de productos
@@ -88,10 +162,7 @@ app.get('/api/productos', async (req, res) => {
 // GET lista de usuarios (handler mínimo)
 app.get('/api/usuarios', async (req, res) => {
   try {
-    const { data, error } = await supabaseAdmin
-      .from('usuarios')
-      .select('*')
-      .order('id', { ascending: true });
+    const { data, error } = await supabaseAdmin.from('usuarios').select('*').order('id', { ascending: true });
 
     if (error) {
       console.warn('GET /api/usuarios - supabase returned error, returning empty array:', error.message);
