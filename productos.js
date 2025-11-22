@@ -10,6 +10,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
  * Helper: normaliza un registro de producto para que el frontend reciba siempre
  * los mismos campos mínimos que espera (id, nombre, categoria_nombre, cantidad, precio, deleted_at).
  * Convierte id a string para evitar inconsistencias entre "1" y 1.
+ * Convierte precio a número cuando sea posible.
  */
 function normalizeProductoRow(row = {}) {
   const idRaw = row?.id ?? row?.product_id ?? null;
@@ -20,17 +21,40 @@ function normalizeProductoRow(row = {}) {
 
   const nombre = row?.nombre ?? row?.name ?? row?.display_name ?? '';
   const categoria_nombre = row?.categoria_nombre ?? row?.categoria ?? row?.category_name ?? '';
-  const cantidad = (typeof row?.cantidad === 'number') ? row.cantidad : (typeof row?.stock === 'number' ? row.stock : 0);
-  const precio = (typeof row?.precio === 'number') ? row.precio : (typeof row?.precio_unitario === 'number' ? row.precio_unitario : null);
+
+  const cantidad = (typeof row?.cantidad === 'number')
+    ? row.cantidad
+    : (typeof row?.stock === 'number' ? row.stock : 0);
+
+  // Normalizar precio: puede venir como number o string con separadores
+  let precio = null;
+  if (typeof row?.precio === 'number') {
+    precio = row.precio;
+  } else if (typeof row?.precio === 'string' && row.precio.trim() !== '') {
+    // eliminar caracteres no numéricos excepto punto y guion
+    const cleaned = String(row.precio).replace(/[^\d.-]/g, '');
+    const parsed = Number(cleaned);
+    precio = Number.isFinite(parsed) ? parsed : null;
+  } else if (typeof row?.precio_unitario === 'number') {
+    precio = row.precio_unitario;
+  } else if (typeof row?.unit_price === 'number') {
+    precio = row.unit_price;
+  } else {
+    precio = null;
+  }
 
   return {
-    ...row,
     id,
     nombre: nombre || 'Sin nombre',
     categoria_nombre: categoria_nombre || 'Sin Categoría',
     cantidad,
     precio,
-    deleted_at: (deleted_at === '' || deleted_at === 'null' || deleted_at === 'undefined') ? null : deleted_at
+    deleted_at: (deleted_at === '' || deleted_at === 'null' || deleted_at === 'undefined') ? null : deleted_at,
+    // conservar flags si existen
+    disabled: !!(row?.disabled === true || String(row?.disabled ?? '').trim().toLowerCase() === 'true'),
+    inactivo: !!(row?.inactivo === true || String(row?.inactivo ?? '').trim().toLowerCase() === 'true'),
+    _inactive: Boolean(deleted_at) || !!(row?.disabled) || !!(row?.inactivo),
+    _raw: row
   };
 }
 
@@ -59,18 +83,26 @@ router.options('*', (req, res) => {
 router.get('/', async (req, res) => {
   const includeInactive = String(req.query.include_inactive || '').toLowerCase() === 'true';
   try {
-    // Primero intentar la vista (si existe en la BD)
+    // Intentar leer desde la vista enriquecida primero
     try {
-      let viewQuery = supabase.from('vista_productos_con_categoria').select('*').order('nombre', { ascending: true });
+      let viewQuery = supabase
+        .from('vista_productos_con_categoria')
+        .select('*')
+        .order('nombre', { ascending: true });
+
       if (!includeInactive) viewQuery = viewQuery.is('deleted_at', null);
+
       const { data: viewData, error: viewErr } = await viewQuery;
+
       if (!viewErr && Array.isArray(viewData) && viewData.length > 0) {
         const normalized = viewData.map(normalizeProductoRow);
+        // Evitar cache en cliente
+        res.setHeader('Cache-Control', 'no-store');
         return res.json(normalized);
       }
-      // Si la vista existe pero está vacía, seguimos al fallback; si la vista no existe, supabase devuelve error y caemos al catch
+      // Si viewData está vacío o hubo error, caemos al fallback
     } catch (viewEx) {
-      // No hacemos nada aquí: fallback a tabla 'productos' abajo
+      // Fallback a tabla 'productos' abajo
     }
 
     // Fallback: consultar tabla 'productos' directamente
@@ -83,6 +115,7 @@ router.get('/', async (req, res) => {
     }
 
     const normalized = (data || []).map(normalizeProductoRow);
+    res.setHeader('Cache-Control', 'no-store');
     return res.json(normalized);
   } catch (err) {
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
@@ -138,20 +171,33 @@ router.delete('/:id', async (req, res) => {
 });
 
 /**
+ * Helper interno: obtener producto enriquecido desde la vista (si existe)
+ * Devuelve null si no se encuentra o si hay error.
+ */
+async function fetchProductoFromView(id) {
+  try {
+    const { data, error } = await supabase
+      .from('vista_productos_con_categoria')
+      .select('*')
+      .eq('id', id)
+      .limit(1);
+
+    if (error || !Array.isArray(data) || data.length === 0) return null;
+    return normalizeProductoRow(data[0]);
+  } catch (err) {
+    return null;
+  }
+}
+
+/**
  * PATCH /api/productos/:id/disable
  * Borrado lógico: set deleted_at = now()
- * Devuelve el registro actualizado (normalizado).
+ * Devuelve el registro actualizado (normalizado). Intenta devolver la versión enriquecida desde la vista.
  */
 router.patch('/:id/disable', async (req, res) => {
   const { id } = req.params;
   try {
-    // Comprobar existencia
-    const { data: exists, error: errCheck } = await supabase.from('productos').select('id').eq('id', id).single();
-    if (errCheck && errCheck.code !== 'PGRST116') { // PGRST116 es ejemplo; no confiar en códigos específicos, solo manejar error
-      return res.status(500).json({ message: 'Error comprobando producto', error: errCheck.message || String(errCheck) });
-    }
-    if (!exists) return res.status(404).json({ message: 'Producto no encontrado' });
-
+    // Actualizar tabla productos
     const { data, error } = await supabase
       .from('productos')
       .update({ deleted_at: new Date().toISOString() })
@@ -160,6 +206,11 @@ router.patch('/:id/disable', async (req, res) => {
 
     if (error) return res.status(500).json({ message: 'No se pudo inhabilitar', error: error.message || String(error) });
 
+    // Intentar devolver la fila enriquecida desde la vista
+    const enriched = await fetchProductoFromView(id);
+    if (enriched) return res.json({ ok: true, data: enriched });
+
+    // Si no hay vista o no devolvió, normalizar el resultado directo
     const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
     return res.json({ ok: true, data: updated });
   } catch (err) {
@@ -170,7 +221,7 @@ router.patch('/:id/disable', async (req, res) => {
 /**
  * PATCH /api/productos/:id/enable
  * Reactiva producto: deleted_at = null
- * Devuelve el registro actualizado (normalizado).
+ * Devuelve el registro actualizado (normalizado). Intenta devolver la versión enriquecida desde la vista.
  */
 router.patch('/:id/enable', async (req, res) => {
   const { id } = req.params;
@@ -182,6 +233,9 @@ router.patch('/:id/enable', async (req, res) => {
       .select();
 
     if (error) return res.status(500).json({ message: 'No se pudo reactivar', error: error.message || String(error) });
+
+    const enriched = await fetchProductoFromView(id);
+    if (enriched) return res.json({ ok: true, data: enriched });
 
     const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
     return res.json({ ok: true, data: updated });
