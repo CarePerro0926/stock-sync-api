@@ -77,8 +77,8 @@ app.use((req, res, next) => {
  * - { username, password }
  * - { user, pass }   (compatibilidad con frontend antiguo)
  *
- * Busca el usuario por email o username y verifica bcrypt hash.
- * Si la tabla 'usuarios' no existe intenta 'users' como fallback.
+ * Busca el usuario por email o username y verifica bcrypt hash usando la columna 'pass'.
+ * Si la tabla 'usuarios' no existe, intenta 'users' como fallback.
  */
 app.post('/api/login', async (req, res) => {
   try {
@@ -99,21 +99,23 @@ app.post('/api/login', async (req, res) => {
     // Helper: ejecutar consulta en una tabla y devolver resultado o error
     const queryUserFromTable = async (tableName) => {
       try {
-        // Seleccionamos columnas comunes; si no existen, supabase devolverá error
-        const select = supabaseAdmin.from(tableName).select('id, email, username, password_hash, nombre').limit(1);
+        let query = supabaseAdmin
+          .from(tableName)
+          .select('id, email, username, pass, nombres, apellidos, role')
+          .limit(1);
 
-        let query = select;
         if (email) {
+          // búsqueda exacta por email
           query = query.eq('email', identifier);
         } else {
-          const safe = identifier.replace(/"/g, '\\"');
+          // búsqueda por username o email; escapar comillas
+          const safe = String(identifier).replace(/"/g, '\\"');
           query = query.or(`username.eq."${safe}",email.eq."${safe}"`).limit(1);
         }
 
         const { data, error } = await query;
         return { data, error };
       } catch (err) {
-        // Capturamos excepciones inesperadas al construir/ejecutar la consulta
         return { data: null, error: err };
       }
     };
@@ -122,14 +124,21 @@ app.post('/api/login', async (req, res) => {
     let usersResult = await queryUserFromTable('usuarios');
 
     if (usersResult.error) {
-      console.warn('POST /api/login - consulta en "usuarios" devolvió error, intentando "users":', usersResult.error?.message || String(usersResult.error));
+      console.warn(
+        'POST /api/login - consulta en "usuarios" devolvió error, intentando "users":',
+        usersResult.error?.message || String(usersResult.error)
+      );
       usersResult = await queryUserFromTable('users');
     }
 
     if (usersResult.error) {
-      // Si sigue habiendo error, devolver detalle para depuración (no exponer secretos)
       console.error('POST /api/login - supabase selectError (final):', usersResult.error);
-      return respondError(res, 500, 'Error al consultar usuario', usersResult.error.message || String(usersResult.error));
+      return respondError(
+        res,
+        500,
+        'Error al consultar usuario',
+        usersResult.error.message || String(usersResult.error)
+      );
     }
 
     const users = usersResult.data;
@@ -140,10 +149,10 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
     }
 
-    // Verificar contraseña (se asume que password_hash contiene bcrypt hash)
-    const storedHash = user.password_hash || user.passwordHash || null;
+    // Verificar contraseña (usa columna 'pass' con hash bcrypt)
+    const storedHash = user.pass || null;
     if (!storedHash) {
-      console.warn('POST /api/login - usuario sin password_hash en DB, user id:', user.id);
+      console.warn('POST /api/login - usuario sin columna "pass" en DB, user id:', user.id);
       return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
     }
 
@@ -157,14 +166,21 @@ app.post('/api/login', async (req, res) => {
     if (!jwtSecret) {
       console.warn('JWT_SECRET no definido; devolviendo token temporal (no recomendado en producción)');
     }
-    const tokenPayload = { sub: user.id, email: user.email };
+    const tokenPayload = { sub: user.id, email: user.email, role: user.role || 'cliente' };
     const token = jwtSecret ? jwt.sign(tokenPayload, jwtSecret, { expiresIn: '8h' }) : 'token-temporal';
 
     // Responder con token y datos públicos del usuario
     return res.status(200).json({
       success: true,
       token,
-      user: { id: user.id, email: user.email, username: user.username || null, nombre: user.nombre || null },
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username || null,
+        role: user.role || 'cliente',
+        nombre: user.nombres || null,
+        apellidos: user.apellidos || null,
+      },
     });
   } catch (err) {
     console.error('POST /api/login error (exception):', err);
