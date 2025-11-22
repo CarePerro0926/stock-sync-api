@@ -1,4 +1,4 @@
-// server.js (o index.js)
+// index.js 
 const express = require('express');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
@@ -15,17 +15,39 @@ const allowedOrigins = isDev
   ? ['http://localhost:3000']
   : ['https://stock-sync-react.vercel.app'];
 
-// CORS: permitir PATCH y responder preflight
+// 1) Middleware CORS manual (garantiza los headers correctos en Render)
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+  if (allowedOrigins.includes(origin)) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+  res.header('Vary', 'Origin');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header(
+    'Access-Control-Allow-Methods',
+    'GET,POST,PUT,DELETE,PATCH,OPTIONS'
+  );
+  res.header(
+    'Access-Control-Allow-Headers',
+    'Content-Type, Authorization, X-Requested-With'
+  );
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(204);
+  }
+  next();
+});
+
+// 2) También usar cors() para cubrir casos genéricos (no sustituye al manual)
 app.use(cors({
   origin: allowedOrigins,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  credentials: true
 }));
-app.options('*', cors());
 
 app.use(express.json());
 
-// Conexión a Supabase (usa la key que tengas configurada)
+// Conexión a Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
 // Ruta raíz
@@ -33,7 +55,7 @@ app.get('/', (req, res) => {
   res.send('Bienvenido a la API de Stock Sync');
 });
 
-// Ruta de prueba
+// Ping
 app.get('/api/ping', (req, res) => {
   res.json({ message: 'API funcionando correctamente' });
 });
@@ -81,7 +103,7 @@ app.post('/api/registro', async (req, res) => {
   }
 });
 
-// Login de usuario
+// Login
 app.post('/api/login', async (req, res) => {
   const { user, pass } = req.body;
 
@@ -147,7 +169,7 @@ app.get('/api/usuarios/:id', async (req, res) => {
   }
 });
 
-// Actualizar usuario por ID (PUT)
+// Actualizar usuario (PUT)
 app.put('/api/usuarios/:id', async (req, res) => {
   const { id } = req.params;
   const updates = req.body;
@@ -169,7 +191,7 @@ app.put('/api/usuarios/:id', async (req, res) => {
   }
 });
 
-// Eliminar usuario por ID
+// Eliminar usuario (DELETE)
 app.delete('/api/usuarios/:id', async (req, res) => {
   const { id } = req.params;
   try {
@@ -189,7 +211,7 @@ app.delete('/api/usuarios/:id', async (req, res) => {
   }
 });
 
-// Inhabilitar usuario (soft delete): PATCH /disable
+// Inhabilitar usuario (PATCH /disable)
 app.patch('/api/usuarios/:id/disable', async (req, res) => {
   const { id } = req.params;
   try {
@@ -212,7 +234,7 @@ app.patch('/api/usuarios/:id/disable', async (req, res) => {
   }
 });
 
-// Reactivar usuario (soft delete): PATCH /enable
+// Reactivar usuario (PATCH /enable)
 app.patch('/api/usuarios/:id/enable', async (req, res) => {
   const { id } = req.params;
   try {
