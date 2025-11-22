@@ -82,9 +82,11 @@ router.options('*', (req, res) => {
  */
 router.get('/', async (req, res) => {
   const includeInactive = String(req.query.include_inactive || '').toLowerCase() === 'true';
+  console.log('[productos GET] include_inactive=', includeInactive);
   try {
     // Intentar leer desde la vista enriquecida primero
     try {
+      console.log('[productos GET] intentando leer vista vista_productos_con_categoria con service role key');
       let viewQuery = supabase
         .from('vista_productos_con_categoria')
         .select('*')
@@ -93,23 +95,26 @@ router.get('/', async (req, res) => {
       if (!includeInactive) viewQuery = viewQuery.is('deleted_at', null);
 
       const { data: viewData, error: viewErr } = await viewQuery;
+      console.log('[productos GET] vista result: error=', viewErr, 'rows=', Array.isArray(viewData) ? viewData.length : viewData);
 
       if (!viewErr && Array.isArray(viewData) && viewData.length > 0) {
         const normalized = viewData.map(normalizeProductoRow);
-        // Evitar cache en cliente
         res.setHeader('Cache-Control', 'no-store');
+        console.log('[productos GET] devolviendo datos desde vista, count=', normalized.length);
         return res.json(normalized);
       }
-      // Si viewData está vacío o hubo error, caemos al fallback
+      console.log('[productos GET] vista no usable (vacía o error), fallback a tabla productos');
     } catch (viewEx) {
-      // Fallback a tabla 'productos' abajo
+      console.error('[productos GET] excepción leyendo vista:', String(viewEx));
     }
 
     // Fallback: consultar tabla 'productos' directamente
+    console.log('[productos GET] consultando tabla productos (fallback)');
     let query = supabase.from('productos').select('*').order('nombre', { ascending: true });
     if (!includeInactive) query = query.is('deleted_at', null);
 
     const { data, error } = await query;
+    console.log('[productos GET] productos result: error=', error, 'rows=', Array.isArray(data) ? data.length : data);
     if (error) {
       return res.status(500).json({ message: 'Error al obtener productos', error: error.message || String(error) });
     }
@@ -118,6 +123,7 @@ router.get('/', async (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
     return res.json(normalized);
   } catch (err) {
+    console.error('[productos GET] error inesperado:', err);
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
