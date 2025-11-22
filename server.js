@@ -3,7 +3,6 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import path from 'path';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { createClient } from '@supabase/supabase-js';
@@ -23,7 +22,7 @@ app.use(
   })
 );
 
-// Manejo seguro de preflight OPTIONS sin registrar rutas con '*'
+// Manejo seguro de preflight OPTIONS
 app.use((req, res, next) => {
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
@@ -31,7 +30,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// Soporta ambos nombres de variable por compatibilidad
+// Variables de entorno para Supabase
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
 
@@ -73,22 +72,21 @@ app.use((req, res, next) => {
 /**
  * POST /api/login
  *
- * Ahora acepta:
+ * Acepta:
  * - { email, password }
  * - { username, password }
  * - { user, pass }   (compatibilidad con frontend antiguo)
  *
  * Busca el usuario por email o username y verifica bcrypt hash.
+ * Si la tabla 'usuarios' no existe intenta 'users' como fallback.
  */
 app.post('/api/login', async (req, res) => {
   try {
-    // Normalizar campos sin imprimir contraseñas en logs
     const body = req.body || {};
     const email = body.email || null;
     const username = body.username || body.user || null;
     const password = body.password || body.pass || null;
 
-    // Log seguro: no mostrar password, solo qué tipo de identificador llegó
     const identifierType = email ? 'email' : username ? 'username' : 'none';
     console.log(`POST /api/login - identifierType: ${identifierType}`);
 
@@ -98,24 +96,44 @@ app.post('/api/login', async (req, res) => {
 
     const identifier = email || username;
 
-    // Construir consulta: si es email, buscar por email; si no, buscar por username o email
-    let query = supabaseAdmin.from('usuarios').select('id, email, username, password_hash, nombre').limit(1);
+    // Helper: ejecutar consulta en una tabla y devolver resultado o error
+    const queryUserFromTable = async (tableName) => {
+      try {
+        // Seleccionamos columnas comunes; si no existen, supabase devolverá error
+        const select = supabaseAdmin.from(tableName).select('id, email, username, password_hash, nombre').limit(1);
 
-    if (email) {
-      query = query.eq('email', identifier);
-    } else {
-      // buscar por username o email (por si hay usuarios con username igual al email)
-      // usamos .or con valores entre comillas para evitar problemas con caracteres
-      const safe = identifier.replace(/"/g, '\\"');
-      query = query.or(`username.eq."${safe}",email.eq."${safe}"`).limit(1);
+        let query = select;
+        if (email) {
+          query = query.eq('email', identifier);
+        } else {
+          const safe = identifier.replace(/"/g, '\\"');
+          query = query.or(`username.eq."${safe}",email.eq."${safe}"`).limit(1);
+        }
+
+        const { data, error } = await query;
+        return { data, error };
+      } catch (err) {
+        // Capturamos excepciones inesperadas al construir/ejecutar la consulta
+        return { data: null, error: err };
+      }
+    };
+
+    // Intentar en 'usuarios' primero, luego en 'users' como fallback
+    let usersResult = await queryUserFromTable('usuarios');
+
+    if (usersResult.error) {
+      console.warn('POST /api/login - consulta en "usuarios" devolvió error, intentando "users":', usersResult.error?.message || String(usersResult.error));
+      usersResult = await queryUserFromTable('users');
     }
 
-    const { data: users, error: selectError } = await query;
-
-    if (selectError) {
-      console.error('POST /api/login - supabase error:', selectError.message);
-      return respondError(res, 500, 'Error al consultar usuario', selectError.message);
+    if (usersResult.error) {
+      // Si sigue habiendo error, devolver detalle para depuración (no exponer secretos)
+      console.error('POST /api/login - supabase selectError (final):', usersResult.error);
+      return respondError(res, 500, 'Error al consultar usuario', usersResult.error.message || String(usersResult.error));
     }
+
+    const users = usersResult.data;
+    console.log('POST /api/login - supabase returned rows:', Array.isArray(users) ? users.length : 0);
 
     const user = Array.isArray(users) && users.length > 0 ? users[0] : null;
     if (!user) {
@@ -125,7 +143,7 @@ app.post('/api/login', async (req, res) => {
     // Verificar contraseña (se asume que password_hash contiene bcrypt hash)
     const storedHash = user.password_hash || user.passwordHash || null;
     if (!storedHash) {
-      console.warn('POST /api/login - usuario sin password_hash en DB');
+      console.warn('POST /api/login - usuario sin password_hash en DB, user id:', user.id);
       return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
     }
 
@@ -149,7 +167,7 @@ app.post('/api/login', async (req, res) => {
       user: { id: user.id, email: user.email, username: user.username || null, nombre: user.nombre || null },
     });
   } catch (err) {
-    console.error('POST /api/login error:', err);
+    console.error('POST /api/login error (exception):', err);
     return respondError(res, 500, 'Error interno', String(err));
   }
 });
@@ -166,8 +184,8 @@ app.get('/api/productos', async (req, res) => {
       .order('id', { ascending: true });
 
     if (error) {
-      console.error('GET /api/productos - supabase error:', error.message);
-      return respondError(res, 500, 'No se pudo obtener productos', error.message);
+      console.error('GET /api/productos - supabase error:', error.message || error);
+      return respondError(res, 500, 'No se pudo obtener productos', error.message || String(error));
     }
 
     console.log('GET /api/productos - returned rows:', Array.isArray(data) ? data.length : 0);
@@ -184,7 +202,7 @@ app.get('/api/usuarios', async (req, res) => {
     const { data, error } = await supabaseAdmin.from('usuarios').select('*').order('id', { ascending: true });
 
     if (error) {
-      console.warn('GET /api/usuarios - supabase returned error, returning empty array:', error.message);
+      console.warn('GET /api/usuarios - supabase returned error, returning empty array:', error.message || error);
       return res.status(200).json([]);
     }
 
@@ -212,7 +230,7 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
 
     if (error) {
       console.error('API error updating producto disable:', error);
-      return respondError(res, 500, 'No se pudo inhabilitar el producto', error.message);
+      return respondError(res, 500, 'No se pudo inhabilitar el producto', error.message || String(error));
     }
 
     const result = Array.isArray(data) ? data : [data];
@@ -240,7 +258,7 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
 
     if (error) {
       console.error('API error updating producto enable:', error);
-      return respondError(res, 500, 'No se pudo habilitar el producto', error.message);
+      return respondError(res, 500, 'No se pudo habilitar el producto', error.message || String(error));
     }
 
     const result = Array.isArray(data) ? data : [data];
