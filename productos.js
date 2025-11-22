@@ -3,7 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { createClient } = require('@supabase/supabase-js');
 
-// En backend usa la clave SERVICE_ROLE para evitar bloqueos por RLS
+// Usa la clave SERVICE_ROLE en backend para evitar bloqueos por RLS
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 // GET: activos por defecto; include_inactive=true devuelve todos
