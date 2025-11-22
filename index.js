@@ -1,85 +1,59 @@
-// index.js 
+// server.js
 const express = require('express');
-const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcrypt');
 require('dotenv').config();
 
 const app = express();
 
-// Detectar entorno
+// Detectar entorno y origen permitido
 const isDev = process.env.NODE_ENV === 'development';
-
-// Orígenes permitidos según entorno
 const allowedOrigins = isDev
   ? ['http://localhost:3000']
   : ['https://stock-sync-react.vercel.app'];
 
-// 1) Middleware CORS manual (garantiza los headers correctos en Render)
+// CORS manual: garantizar PATCH y respuesta al preflight
 app.use((req, res, next) => {
   const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
   }
-  res.header('Vary', 'Origin');
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header(
-    'Access-Control-Allow-Methods',
-    'GET,POST,PUT,DELETE,PATCH,OPTIONS'
-  );
-  res.header(
-    'Access-Control-Allow-Headers',
-    'Content-Type, Authorization, X-Requested-With'
-  );
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,PATCH,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+
   if (req.method === 'OPTIONS') {
+    // Preflight OK: no continuar a rutas
     return res.sendStatus(204);
   }
   next();
 });
 
-// 2) También usar cors() para cubrir casos genéricos (no sustituye al manual)
-app.use(cors({
-  origin: allowedOrigins,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  credentials: true
-}));
-
 app.use(express.json());
 
-// Conexión a Supabase
+// Supabase
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
 
-// Ruta raíz
-app.get('/', (req, res) => {
-  res.send('Bienvenido a la API de Stock Sync');
-});
+// Rutas
+app.get('/', (_, res) => res.send('Bienvenido a la API de Stock Sync'));
+app.get('/api/ping', (_, res) => res.json({ message: 'API funcionando correctamente' }));
 
-// Ping
-app.get('/api/ping', (req, res) => {
-  res.json({ message: 'API funcionando correctamente' });
-});
-
-// Registro de usuario
+// Registro
 app.post('/api/registro', async (req, res) => {
   const { nombres, apellidos, cedula, fecha, telefono, email, user, pass, role } = req.body;
-
   if (!nombres || !apellidos || !cedula || !fecha || !telefono || !email || !user || !pass || !role) {
     return res.status(400).json({ message: 'Faltan campos obligatorios' });
   }
-
   if (role === 'cliente' && email.endsWith('@stocksync.com')) {
     return res.status(400).json({ message: 'Los clientes no pueden usar correos @stocksync.com' });
   }
-
   if ((role === 'admin' || role === 'administrador') && !email.endsWith('@stocksync.com')) {
     return res.status(400).json({ message: 'Los administradores deben usar correos @stocksync.com' });
   }
-
   try {
     const hashedPass = await bcrypt.hash(pass, 10);
-
-    const { data, error } = await supabase.from('usuarios').insert({
+    const { error } = await supabase.from('usuarios').insert({
       nombres,
       apellidos,
       cedula,
@@ -90,15 +64,9 @@ app.post('/api/registro', async (req, res) => {
       pass: hashedPass,
       role
     });
-
-    if (error) {
-      console.error('Error Supabase:', error);
-      return res.status(500).json({ message: 'Error al registrar', error: error.message });
-    }
-
+    if (error) return res.status(500).json({ message: 'Error al registrar', error: error.message });
     res.json({ message: 'Usuario registrado con éxito' });
   } catch (err) {
-    console.error('Error inesperado:', err);
     res.status(500).json({ message: 'Error inesperado en el servidor', error: err.message });
   }
 });
@@ -106,65 +74,41 @@ app.post('/api/registro', async (req, res) => {
 // Login
 app.post('/api/login', async (req, res) => {
   const { user, pass } = req.body;
-
-  if (!user || !pass) {
-    return res.status(400).json({ message: 'Faltan credenciales' });
-  }
-
+  if (!user || !pass) return res.status(400).json({ message: 'Faltan credenciales' });
   try {
     const { data, error } = await supabase
       .from('usuarios')
       .select('*')
       .or(`email.eq.${user},username.eq.${user}`)
       .single();
-
-    if (error || !data) {
-      return res.status(401).json({ message: 'Usuario no encontrado' });
-    }
-
+    if (error || !data) return res.status(401).json({ message: 'Usuario no encontrado' });
     const match = await bcrypt.compare(pass, data.pass);
-    if (!match) {
-      return res.status(401).json({ message: 'Contraseña incorrecta' });
-    }
-
+    if (!match) return res.status(401).json({ message: 'Contraseña incorrecta' });
     res.json({ message: 'Login exitoso', user: data });
   } catch (err) {
-    console.error('Error inesperado en login:', err);
     res.status(500).json({ message: 'Error inesperado en el servidor', error: err.message });
   }
 });
 
-// Obtener todos los usuarios
-app.get('/api/usuarios', async (req, res) => {
+// Listar usuarios
+app.get('/api/usuarios', async (_, res) => {
   try {
     const { data, error } = await supabase.from('usuarios').select('*');
-    if (error) {
-      console.error('Error al obtener usuarios:', error);
-      return res.status(500).json({ message: 'Error al obtener usuarios', error: error.message });
-    }
+    if (error) return res.status(500).json({ message: 'Error al obtener usuarios', error: error.message });
     res.json(data);
   } catch (err) {
-    console.error('Error inesperado /api/usuarios:', err);
     res.status(500).json({ message: 'Error inesperado', error: err.message });
   }
 });
 
-// Obtener usuario por ID
+// Obtener usuario
 app.get('/api/usuarios/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    const { data, error } = await supabase
-      .from('usuarios')
-      .select('*')
-      .eq('id', id)
-      .single();
-
-    if (error || !data) {
-      return res.status(404).json({ message: 'Usuario no encontrado', error: error?.message });
-    }
+    const { data, error } = await supabase.from('usuarios').select('*').eq('id', id).single();
+    if (error || !data) return res.status(404).json({ message: 'Usuario no encontrado', error: error?.message });
     res.json(data);
   } catch (err) {
-    console.error('Error inesperado /api/usuarios/:id:', err);
     res.status(500).json({ message: 'Error inesperado', error: err.message });
   }
 });
@@ -172,21 +116,11 @@ app.get('/api/usuarios/:id', async (req, res) => {
 // Actualizar usuario (PUT)
 app.put('/api/usuarios/:id', async (req, res) => {
   const { id } = req.params;
-  const updates = req.body;
-
   try {
-    const { data, error } = await supabase
-      .from('usuarios')
-      .update(updates)
-      .eq('id', id)
-      .select();
-
-    if (error) {
-      return res.status(500).json({ message: 'Error al actualizar usuario', error: error.message });
-    }
+    const { data, error } = await supabase.from('usuarios').update(req.body).eq('id', id).select();
+    if (error) return res.status(500).json({ message: 'Error al actualizar usuario', error: error.message });
     res.json({ message: 'Usuario actualizado', data });
   } catch (err) {
-    console.error('Error inesperado PUT /api/usuarios/:id:', err);
     res.status(500).json({ message: 'Error inesperado', error: err.message });
   }
 });
@@ -195,69 +129,47 @@ app.put('/api/usuarios/:id', async (req, res) => {
 app.delete('/api/usuarios/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    const { error } = await supabase
-      .from('usuarios')
-      .delete()
-      .eq('id', id);
-
-    if (error) {
-      return res.status(500).json({ message: 'Error al eliminar usuario', error: error.message });
-    }
-
+    const { error } = await supabase.from('usuarios').delete().eq('id', id);
+    if (error) return res.status(500).json({ message: 'Error al eliminar usuario', error: error.message });
     res.json({ message: 'Usuario eliminado' });
   } catch (err) {
-    console.error('Error inesperado DELETE /api/usuarios/:id:', err);
     res.status(500).json({ message: 'Error inesperado', error: err.message });
   }
 });
 
-// Inhabilitar usuario (PATCH /disable)
+// Inhabilitar (PATCH)
 app.patch('/api/usuarios/:id/disable', async (req, res) => {
   const { id } = req.params;
   try {
-    const payload = { deleted_at: new Date().toISOString() };
     const { data, error } = await supabase
       .from('usuarios')
-      .update(payload)
+      .update({ deleted_at: new Date().toISOString() })
       .eq('id', id)
       .select();
-
-    if (error) {
-      console.error('Error al inhabilitar:', error);
-      return res.status(500).json({ message: 'No se pudo inhabilitar el usuario', error: error.message });
-    }
-
+    if (error) return res.status(500).json({ message: 'No se pudo inhabilitar el usuario', error: error.message });
     res.json({ ok: true, data });
   } catch (err) {
-    console.error('Error inesperado PATCH /disable:', err);
     res.status(500).json({ message: 'Error inesperado', error: err.message });
   }
 });
 
-// Reactivar usuario (PATCH /enable)
+// Reactivar (PATCH)
 app.patch('/api/usuarios/:id/enable', async (req, res) => {
   const { id } = req.params;
   try {
-    const payload = { deleted_at: null };
     const { data, error } = await supabase
       .from('usuarios')
-      .update(payload)
+      .update({ deleted_at: null })
       .eq('id', id)
       .select();
-
-    if (error) {
-      console.error('Error al reactivar:', error);
-      return res.status(500).json({ message: 'No se pudo reactivar el usuario', error: error.message });
-    }
-
+    if (error) return res.status(500).json({ message: 'No se pudo reactivar el usuario', error: error.message });
     res.json({ ok: true, data });
   } catch (err) {
-    console.error('Error inesperado PATCH /enable:', err);
     res.status(500).json({ message: 'Error inesperado', error: err.message });
   }
 });
 
-// Puerto dinámico para Render
+// Puerto
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`API corriendo en puerto ${PORT}`);
