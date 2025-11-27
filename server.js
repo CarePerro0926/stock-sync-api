@@ -5,6 +5,7 @@ import cors from 'cors'; // Asegúrate de tener 'cors' instalado: npm install co
 import helmet from 'helmet';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import axios from 'axios'; // Importar axios para el proxy
 import { createClient } from '@supabase/supabase-js';
 
 const app = express();
@@ -84,24 +85,82 @@ const respondError = (res, status = 500, message = 'Error interno', details = nu
 
 // Logging temporal y verificación de header (enmascarado)
 app.use((req, res, next) => {
-  const raw = req.headers['x-admin-token'] || null;
-  const masked = raw ? `${raw.slice(0, 4)}...${raw.slice(-4)}` : null;
-  console.log(
-    `${new Date().toISOString()} ${req.method} ${req.originalUrl} - x-admin-token present: ${!!raw} masked: ${masked}`
-  );
+  const hasAdminHeader = !!req.headers['x-admin-token'];
+  console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl} - x-admin-token present: ${hasAdminHeader}`);
   next();
 });
 
 /**
+ * ADMIN PROXY
+ * Ruta proxy para que el frontend no llame directamente a la API administrativa externa.
+ * - El frontend debe llamar a: PATCH /admin/usuarios/:id/disable  (o /enable)
+ * - El proxy añade x-admin-token desde process.env.ADMIN_API_TOKEN y reenvía la petición.
+ *
+ * Protección:
+ * - Si quieres validar JWT de admin en tu app, descomenta authenticateJwtAdmin en la ruta.
+ * - Alternativamente, puedes permitir la llamada si el frontend incluye el header x-admin-token correcto,
+ *   pero eso expone el token en el cliente (no recomendado).
+ */
+// CORREGIDO: Ruta sin sintaxis incompatible de path-to-regexp
+app.patch('/admin/usuarios/:id/:action', /* authenticateJwtAdmin, */ async (req, res) => {
+  try {
+    const { id, action } = req.params;
+
+    // Validar manualmente la acción
+    if (action !== 'enable' && action !== 'disable') {
+        return respondError(res, 400, 'Acción inválida. Solo se permite "enable" o "disable".');
+    }
+
+    console.log('ADMIN PROXY called', { id, action, from: req.ip });
+
+    if (!process.env.ADMIN_API_TOKEN) {
+      console.warn('ADMIN proxy rejected: ADMIN_API_TOKEN not configured on server');
+      return respondError(res, 500, 'ADMIN token not configured on server');
+    }
+
+    // CAMBIADO: API_INTERNAL_BASE debe apuntar a la API EXTERNA real donde se almacenan los usuarios
+    // y donde se deben aplicar las rutas PATCH /api/usuarios/:id/(disable|enable).
+    // Ejemplo: const API_INTERNAL_BASE = 'https://mi-api-externa-real.com';
+    // Reemplaza esta URL con la correcta de la API destino.
+    // Si no tienes una API externa distinta, debes implementar la lógica de usuarios directamente aquí usando Supabase.
+    // const API_INTERNAL_BASE = process.env.API_INTERNAL_BASE || 'https://stock-sync-api.onrender.com'; // <-- ESTO CAUSA EL ERROR ANTERIOR SI SE USA EL PROXY ASÍ
+    // CORRECCIÓN: Define una variable de entorno para la API real de usuarios o implementa la lógica localmente.
+    // Por ejemplo, si tienes una variable de entorno API_USUARIOS_BASE:
+    const API_USUARIOS_BASE = process.env.API_USUARIOS_BASE || process.env.API_INTERNAL_BASE || 'https://la-api-externa-que-tiene-los-usuarios.com'; // <-- CAMBIA ESTA URL
+    const url = `${API_USUARIOS_BASE}/api/usuarios/${id}/${action}`;
+
+    const resp = await axios.patch(url, null, {
+      headers: {
+        'Content-Type': 'application/json',
+        'x-admin-token': process.env.ADMIN_API_TOKEN
+      },
+      validateStatus: () => true
+    });
+
+    // Reenviamos status y body tal cual lo devolvió la API remota
+    return res.status(resp.status).send(resp.data);
+  } catch (err) {
+    console.error('Proxy admin error:', err?.response?.data || err.message || err);
+    return respondError(res, 500, 'Error interno en proxy', err?.response?.data || err?.message || String(err));
+  }
+});
+
+/**
+ * Rutas de la API local
+ * - /api/login
+ * - /api/productos
+ * - /api/usuarios
+ * - /api/productos/:id/disable
+ * - /api/productos/:id/enable
+ *
+ * Estas rutas ya estaban implementadas; se mantienen con pequeñas mejoras de robustez.
+ */
+
+/**
  * POST /api/login
- *
- * Acepta:
- * - { email, password }
- * - { username, password }
- * - { user, pass }   (compatibilidad con frontend antiguo)
- *
- * Busca el usuario por email o username y verifica bcrypt hash usando la columna 'pass'.
- * Si la tabla 'usuarios' no existe, intenta 'users' como fallback.
+ * - Acepta { email, password } o { username, password } o { user, pass }
+ * - Busca en tabla 'usuarios' y si no existe intenta 'users'
+ * - Verifica bcrypt y devuelve JWT si JWT_SECRET está definido
  */
 app.post('/api/login', async (req, res) => {
   try {
@@ -119,7 +178,6 @@ app.post('/api/login', async (req, res) => {
 
     const identifier = email || username;
 
-    // Helper: ejecutar consulta en una tabla y devolver resultado o error
     const queryUserFromTable = async (tableName) => {
       try {
         let query = supabaseAdmin
@@ -128,10 +186,8 @@ app.post('/api/login', async (req, res) => {
           .limit(1);
 
         if (email) {
-          // búsqueda exacta por email
           query = query.eq('email', identifier);
         } else {
-          // búsqueda por username o email; escapar comillas
           const safe = String(identifier).replace(/"/g, '\\"');
           query = query.or(`username.eq."${safe}",email.eq."${safe}"`).limit(1);
         }
@@ -144,25 +200,16 @@ app.post('/api/login', async (req, res) => {
       }
     };
 
-    // Intentar en 'usuarios' primero, luego en 'users' como fallback
     let usersResult = await queryUserFromTable('usuarios');
 
     if (usersResult.error) {
-      console.warn(
-        'POST /api/login - consulta en "usuarios" devolvió error, intentando "users":',
-        usersResult.error?.message || String(usersResult.error)
-      );
+      console.warn('POST /api/login - error consultando "usuarios", intentando "users":', usersResult.error?.message || String(usersResult.error));
       usersResult = await queryUserFromTable('users');
     }
 
     if (usersResult.error) {
       console.error('POST /api/login - supabase selectError (final):', usersResult.error);
-      return respondError(
-        res,
-        500,
-        'Error al consultar usuario',
-        usersResult.error.message || String(usersResult.error)
-      );
+      return respondError(res, 500, 'Error al consultar usuario', usersResult.error.message || String(usersResult.error));
     }
 
     const users = usersResult.data;
@@ -173,7 +220,6 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
     }
 
-    // Verificar contraseña (usa columna 'pass' con hash bcrypt)
     const storedHash = user.pass || null;
     if (!storedHash) {
       console.warn('POST /api/login - usuario sin columna "pass" en DB, user id:', user.id);
@@ -185,15 +231,14 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
     }
 
-    // Generar JWT (reemplaza por tu estrategia de tokens si usas otra)
     const jwtSecret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
     if (!jwtSecret) {
-      console.warn('JWT_SECRET no definido; devolviendo token temporal (no recomendado en producción)');
+      console.warn('JWT_SECRET no definido; se devolverá token temporal (no recomendado en producción).');
     }
+
     const tokenPayload = { sub: user.id, email: user.email, role: user.role || 'cliente' };
     const token = jwtSecret ? jwt.sign(tokenPayload, jwtSecret, { expiresIn: '8h' }) : 'token-temporal';
 
-    // Responder con token y datos públicos del usuario
     return res.status(200).json({
       success: true,
       token,
@@ -216,8 +261,6 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/productos', async (req, res) => {
   try {
     console.log('GET /api/productos - SUPABASE_URL present:', !!SUPABASE_URL);
-    console.log('GET /api/productos - SUPABASE_SERVICE_KEY present:', !!SUPABASE_SERVICE_KEY);
-
     const { data, error } = await supabaseAdmin
       .from('productos')
       .select('id, product_id, nombre, precio, cantidad, categoria_id, deleted_at')
@@ -253,7 +296,7 @@ app.get('/api/usuarios', async (req, res) => {
   }
 });
 
-// PATCH disable
+// PATCH disable (requiere header x-admin-token)
 app.patch('/api/productos/:id/disable', async (req, res) => {
   if (!isAdminRequest(req)) {
     console.warn('PATCH disable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
@@ -281,7 +324,7 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
   }
 });
 
-// PATCH enable
+// PATCH enable (requiere header x-admin-token)
 app.patch('/api/productos/:id/enable', async (req, res) => {
   if (!isAdminRequest(req)) {
     console.warn('PATCH enable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
@@ -376,6 +419,19 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
 
 // Health check
 app.get('/api/health', (req, res) => res.status(200).json({ ok: true }));
+
+// Ruta raíz (mensaje simple)
+app.get('/', (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(200).send('Bienvenido a la API de Stock Sync');
+});
+
+// Error handler centralizado (último middleware)
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  if (res.headersSent) return next(err);
+  return respondError(res, 500, 'Error interno', String(err));
+});
 
 const PORT = process.env.PORT || 10000; // Render usa el puerto 10000 por defecto si no se especifica
 app.listen(PORT, () => {
