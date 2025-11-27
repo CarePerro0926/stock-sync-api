@@ -56,6 +56,7 @@ const isAdminRequest = (req) => {
 };
 
 // --- NUEVO: Middleware para validar JWT y rol admin ---
+// CAMBIADO: Se espera el rol 'administrador' en lugar de 'admin'
 const authenticateJwtAdmin = (req, res, next) => {
   try {
     const auth = req.headers.authorization || '';
@@ -65,7 +66,7 @@ const authenticateJwtAdmin = (req, res, next) => {
     if (!secret) return res.status(500).json({ success: false, message: 'JWT secret no configurado en servidor' });
     const payload = jwt.verify(token, secret);
     // Ajusta según tu payload real (role, isAdmin, etc.)
-    if (!payload || (payload.role && payload.role !== 'admin')) {
+    if (!payload || (payload.role && payload.role !== 'administrador')) { // <-- CAMBIADO A 'administrador'
       return res.status(403).json({ success: false, message: 'Forbidden' });
     }
     req.user = payload;
@@ -236,6 +237,7 @@ app.post('/api/login', async (req, res) => {
       console.warn('JWT_SECRET no definido; se devolverá token temporal (no recomendado en producción).');
     }
 
+    // CAMBIADO: El rol se incluye directamente desde la base de datos
     const tokenPayload = { sub: user.id, email: user.email, role: user.role || 'cliente' };
     const token = jwtSecret ? jwt.sign(tokenPayload, jwtSecret, { expiresIn: '8h' }) : 'token-temporal';
 
@@ -246,7 +248,7 @@ app.post('/api/login', async (req, res) => {
         id: user.id,
         email: user.email,
         username: user.username || null,
-        role: user.role || 'cliente',
+        role: user.role || 'cliente', // <-- Se devuelve el rol tal cual está en la DB
         nombre: user.nombres || null,
         apellidos: user.apellidos || null,
       },
