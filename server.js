@@ -1,7 +1,6 @@
 // api/server.js
 import 'dotenv/config';
 import express from 'express';
-import cors from 'cors';
 import helmet from 'helmet';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -11,19 +10,36 @@ const app = express();
 app.use(express.json());
 app.use(helmet());
 
-// CORS: permitir header personalizado x-admin-token y credenciales si se usan
-app.use(
-  cors({
-    origin: process.env.FRONTEND_ORIGIN || '*',
-    allowedHeaders: ['Content-Type', 'x-admin-token', 'authorization'],
-    exposedHeaders: ['Content-Type', 'x-admin-token'],
-    credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-  })
-);
+// --- CORS dinámico seguro ---
+// FRONTEND_ORIGIN puede contener varios orígenes separados por comas:
+// e.g. "https://stock-sync-react.vercel.app,https://otra.vercel.app"
+const allowedOriginsEnv = process.env.FRONTEND_ORIGIN || '';
+const allowedOrigins = allowedOriginsEnv
+  .split(',')
+  .map(s => s.trim())
+  .filter(Boolean);
 
-// Manejo seguro de preflight OPTIONS
+// Si no se configuró FRONTEND_ORIGIN, allowAll = true (no recomendado con credentials)
+const allowAll = allowedOrigins.length === 0;
+
 app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  if (allowAll) {
+    // Solo usar '*' si no se usan credenciales (cookies/Authorization)
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  } else if (origin && allowedOrigins.includes(origin)) {
+    // Devuelve SOLO el origen que hizo la petición (no una lista)
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
+
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization,x-admin-token');
+  res.setHeader('Access-Control-Expose-Headers', 'Content-Type,x-admin-token');
+  // Si necesitas cookies o credenciales, deja esto en 'true' y asegúrate de no usar '*'
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+
   if (req.method === 'OPTIONS') {
     return res.sendStatus(204);
   }
@@ -58,6 +74,20 @@ const respondError = (res, status = 500, message = 'Error interno', details = nu
   if (details) payload.error = details;
   return res.status(status).json(payload);
 };
+
+// DEBUG temporal: log de headers que se enviarán (útil para depurar CORS duplicado)
+app.use((req, res, next) => {
+  const _writeHead = res.writeHead;
+  res.writeHead = function (statusCode, statusMessage) {
+    try {
+      console.log('DEBUG: response headers about to be sent:', res.getHeaders());
+    } catch (e) {
+      // ignore
+    }
+    return _writeHead.apply(this, arguments);
+  };
+  next();
+});
 
 // Logging temporal y verificación de header (enmascarado)
 app.use((req, res, next) => {
