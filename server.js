@@ -303,7 +303,7 @@ app.post('/api/login', async (req, res) => {
 /**
  * GET /api/productos
  * Devuelve siempre un array (frontend espera array en resp.data)
- * Ahora incluye lógica para mostrar inactivos si es admin o se solicita explícitamente.
+ * Ahora incluye lógica para mostrar inactivos si se solicita explícitamente.
  */
 app.get('/api/productos', async (req, res) => {
   try {
@@ -312,29 +312,9 @@ app.get('/api/productos', async (req, res) => {
       return res.status(200).json([]); // Devolver array vacío para no romper frontend
     }
 
-    // Detectar admin por header o JWT
-    let isAdmin = false;
-    if (isAdminRequestHeader(req)) {
-      isAdmin = true;
-    } else {
-      const auth = req.headers.authorization || '';
-      const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
-      if (auth.startsWith('Bearer ') && secret) {
-        try {
-          const token = auth.split(' ')[1];
-          const payload = jwt.verify(token, secret);
-          if (payload && payload.role && String(payload.role).toLowerCase() === 'administrador') isAdmin = true;
-        } catch (e) {
-          // token inválido -> no admin
-        }
-      }
-    }
+    const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
 
-    // Decidir incluir inactivos: query param OR admin
-    let includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
-    if (!includeInactivos && isAdmin) includeInactivos = true;
-
-    console.log('GET /api/productos - isAdmin:', isAdmin, 'includeInactivos:', includeInactivos);
+    console.log('GET /api/productos - includeInactivos:', includeInactivos);
 
     let query = supabaseAdmin
       .from('productos')
@@ -368,7 +348,7 @@ app.get('/api/productos', async (req, res) => {
 /**
  * GET /api/categorias
  * Devuelve siempre un array (frontend espera array en resp.data)
- * Ahora incluye lógica para mostrar inactivos si es admin o se solicita explícitamente.
+ * Ahora incluye lógica para mostrar inactivos si se solicita explícitamente.
  */
 app.get('/api/categorias', async (req, res) => {
   try {
@@ -377,29 +357,9 @@ app.get('/api/categorias', async (req, res) => {
       return res.status(200).json([]); // Devolver array vacío para no romper frontend
     }
 
-    // Detectar admin por header o JWT
-    let isAdmin = false;
-    if (isAdminRequestHeader(req)) {
-      isAdmin = true;
-    } else {
-      const auth = req.headers.authorization || '';
-      const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
-      if (auth.startsWith('Bearer ') && secret) {
-        try {
-          const token = auth.split(' ')[1];
-          const payload = jwt.verify(token, secret);
-          if (payload && payload.role && String(payload.role).toLowerCase() === 'administrador') isAdmin = true;
-        } catch (e) {
-          // token inválido -> no admin
-        }
-      }
-    }
+    const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
 
-    // Decidir incluir inactivos: query param OR admin
-    let includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
-    if (!includeInactivos && isAdmin) includeInactivos = true;
-
-    console.log('GET /api/categorias - isAdmin:', isAdmin, 'includeInactivos:', includeInactivos);
+    console.log('GET /api/categorias - includeInactivos:', includeInactivos);
 
     let query = supabaseAdmin
       .from('categorias') // Asegurar que la tabla se llama 'categorias'
@@ -634,8 +594,10 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
       return respondError(res, 500, 'No se pudo inhabilitar el producto', error);
     }
 
-    const result = Array.isArray(data) ? data : [data]; // Asegurar que sea un array para el wrapper
-    return res.status(200).json({ success: true, data: result[0] }); // Devolver el primer (y debería ser único) resultado
+    if (!data || data.length === 0) return respondError(res, 404, 'Producto no encontrado');
+
+    const result = Array.isArray(data) ? data[0] : data; // Asegurar que sea un objeto único
+    return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('API exception PATCH disable:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -668,8 +630,10 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
       return respondError(res, 500, 'No se pudo habilitar el producto', error);
     }
 
-    const result = Array.isArray(data) ? data : [data]; // Asegurar que sea un array para el wrapper
-    return res.status(200).json({ success: true, data: result[0] }); // Devolver el primer (y debería ser único) resultado
+    if (!data || data.length === 0) return respondError(res, 404, 'Producto no encontrado');
+
+    const result = Array.isArray(data) ? data[0] : data; // Asegurar que sea un objeto único
+    return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('API exception PATCH enable:', err);
     return respondError(res, 500, 'Error interno', String(err));
