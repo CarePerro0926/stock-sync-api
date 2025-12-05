@@ -61,6 +61,8 @@ const isUuid = (s) => {
   if (typeof s !== 'string') return false;
   return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(s);
 };
+
+const isValidIdFlexible = (id) => typeof id === 'string' && id.length > 0;
 // --- FIN UTILIDADES ---
 
 // --- LOGGING SIMPLE ---
@@ -118,7 +120,9 @@ const authenticateJwtAdmin = async (req, res, next) => {
   try {
     await authenticateJwt(req, res, async () => {
       const role = req.user && req.user.role ? req.user.role : (req.user && req.user.tokenPayload && req.user.tokenPayload.role) || null;
-      if (!role || role !== 'administrador') return res.status(403).json({ success: false, message: 'Forbidden' });
+      if (!role || role !== 'administrador') {
+        return res.status(403).json({ success: false, message: 'Forbidden' });
+      }
       return next();
     });
   } catch (err) {
@@ -158,11 +162,15 @@ const insertAuditLog = async ({ actor_id = null, actor_username = null, action, 
 
 /**
  * ADMIN PROXY
+ * Proxy para reenviar acciones admin a API externa usando ADMIN_API_TOKEN del servidor.
  */
 app.patch('/admin/usuarios/:id/:action', /* authenticateJwtAdmin, */ async (req, res) => {
   try {
     const { id, action } = req.params;
-    if (action !== 'enable' && action !== 'disable') return respondError(res, 400, 'Acción inválida. Solo enable/disable.');
+
+    if (action !== 'enable' && action !== 'disable') {
+      return respondError(res, 400, 'Acción inválida. Solo enable/disable.');
+    }
 
     if (!ADMIN_API_TOKEN) {
       console.warn('ADMIN proxy rejected: ADMIN_API_TOKEN not configured on server');
@@ -197,7 +205,9 @@ app.post('/api/login', async (req, res) => {
     const username = body.username || body.user || null;
     const password = body.password || body.pass || null;
 
-    if (!password || (!email && !username)) return res.status(400).json({ success: false, message: 'Faltan credenciales' });
+    if (!password || (!email && !username)) {
+      return res.status(400).json({ success: false, message: 'Faltan credenciales' });
+    }
 
     const identifier = email || username;
 
@@ -223,20 +233,35 @@ app.post('/api/login', async (req, res) => {
     };
 
     let usersResult = await queryUserFromTable('usuarios');
-    if (usersResult.error) usersResult = await queryUserFromTable('users');
-    if (usersResult.error) return respondError(res, 500, 'Error al consultar usuario', usersResult.error.message || String(usersResult.error));
+
+    if (usersResult.error) {
+      usersResult = await queryUserFromTable('users');
+    }
+
+    if (usersResult.error) {
+      console.error('POST /api/login - supabase select error:', usersResult.error);
+      return respondError(res, 500, 'Error al consultar usuario', usersResult.error.message || String(usersResult.error));
+    }
 
     const users = usersResult.data;
     const user = Array.isArray(users) && users.length > 0 ? users[0] : null;
-    if (!user) return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    if (!user) {
+      return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    }
 
-    if (user.deleted_at) return res.status(403).json({ success: false, message: 'Usuario inhabilitado' });
+    if (user.deleted_at) {
+      return res.status(403).json({ success: false, message: 'Usuario inhabilitado' });
+    }
 
     const storedHash = user.pass || null;
-    if (!storedHash) return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    if (!storedHash) {
+      return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    }
 
     const passwordMatches = await bcrypt.compare(password, storedHash);
-    if (!passwordMatches) return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    if (!passwordMatches) {
+      return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
+    }
 
     const jwtSecret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
     const tokenPayload = { sub: user.id, email: user.email, role: user.role || 'cliente' };
@@ -262,7 +287,7 @@ app.post('/api/login', async (req, res) => {
 
 /**
  * GET /api/productos
- * IMPORTANT: return an array (frontend expects an array)
+ * Devuelve siempre un array (frontend espera array)
  */
 app.get('/api/productos', async (req, res) => {
   try {
@@ -279,11 +304,10 @@ app.get('/api/productos', async (req, res) => {
 
     if (error) {
       console.error('GET /api/productos - supabase error:', error);
-      // Return empty array to keep frontend safe (it expects an array)
-      return res.status(200).json([]);
+      return res.status(200).json([]); // devolver array vacío para evitar crash en frontend
     }
 
-    return res.status(200).json(data || []);
+    return res.status(200).json(Array.isArray(data) ? data : []);
   } catch (err) {
     console.error('API exception GET /api/productos:', err);
     return res.status(200).json([]);
@@ -292,13 +316,14 @@ app.get('/api/productos', async (req, res) => {
 
 /**
  * GET /api/usuarios
- * - Detect admin by x-admin-token or JWT role
- * - Return an array (frontend expects an array)
- * - Normalize each user with status field
+ * - Detecta admin por x-admin-token o JWT con role administrador.
+ * - Si es admin, incluye inactivos por defecto (o si se pasa ?include_inactivos=true).
+ * - Devuelve siempre un array (frontend espera array).
+ * - Normaliza cada usuario con campo status: 'active' | 'inactive'
  */
 app.get('/api/usuarios', async (req, res) => {
   try {
-    // Detect admin
+    // Detectar admin
     let isAdmin = false;
     if (isAdminRequest(req)) {
       isAdmin = true;
@@ -313,39 +338,46 @@ app.get('/api/usuarios', async (req, res) => {
             isAdmin = true;
           }
         } catch (e) {
-          // invalid token -> not admin
+          // token inválido o expirado -> no admin
         }
       }
     }
 
-    // Decide include inactive
+    // Decidir incluir inactivos
     let includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
     if (!includeInactivos && isAdmin) includeInactivos = true;
+
+    console.log('GET /api/usuarios - isAdmin:', isAdmin, 'includeInactivos:', includeInactivos);
 
     let query = supabaseAdmin.from('usuarios').select('*').order('id', { ascending: true });
     if (!includeInactivos) query = query.is('deleted_at', null);
 
     const { data, error } = await query;
-
     if (error) {
-      console.error('GET /api/usuarios - supabase error:', error);
-      // Return empty array to keep frontend safe (it expects an array)
-      return res.status(200).json([]);
+      console.warn('GET /api/usuarios - supabase error:', error);
+      return res.status(200).json([]); // devolver array vacío para evitar crash en frontend
     }
 
-    const normalized = (data || []).map(u => ({ ...u, status: u.deleted_at ? 'inactive' : 'active' }));
+    const normalized = (Array.isArray(data) ? data : []).map(u => ({
+      ...u,
+      status: u.deleted_at ? 'inactive' : 'active'
+    }));
+
+    res.setHeader('X-Users-Count', normalized.length);
     return res.status(200).json(normalized);
   } catch (err) {
-    console.error('GET /api/usuarios - exception:', err);
+    console.warn('GET /api/usuarios - exception:', String(err));
     return res.status(200).json([]);
   }
 });
 
 /**
  * PATCH /api/productos/:id/disable
+ * Requiere x-admin-token
  */
 app.patch('/api/productos/:id/disable', async (req, res) => {
   if (!isAdminRequest(req)) {
+    console.warn('PATCH disable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
     return respondError(res, 403, 'Forbidden');
   }
 
@@ -363,7 +395,7 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
     }
 
     const result = Array.isArray(data) ? data : [data];
-    return res.status(200).json(result);
+    return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('API exception PATCH disable:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -372,9 +404,11 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
 
 /**
  * PATCH /api/productos/:id/enable
+ * Requiere x-admin-token
  */
 app.patch('/api/productos/:id/enable', async (req, res) => {
   if (!isAdminRequest(req)) {
+    console.warn('PATCH enable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
     return respondError(res, 403, 'Forbidden');
   }
 
@@ -392,7 +426,7 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
     }
 
     const result = Array.isArray(data) ? data : [data];
-    return res.status(200).json(result);
+    return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('API exception PATCH enable:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -401,8 +435,8 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
 
 /**
  * PATCH /api/usuarios/:id/disable
- * Requires authenticateJwtAdmin
- * Returns the updated user object (not wrapped) for frontend convenience
+ * Requiere authenticateJwtAdmin
+ * Devuelve { success: true, data: usuario } para que frontend gestione estado
  */
 app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
@@ -439,7 +473,7 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
       console.warn('Audit log failed for usuario_disable:', e);
     }
 
-    return res.status(200).json(result);
+    return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('API exception PATCH disable usuario:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -448,8 +482,7 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
 
 /**
  * PATCH /api/usuarios/:id/enable
- * Requires authenticateJwtAdmin
- * Returns the updated user object (not wrapped)
+ * Requiere authenticateJwtAdmin
  */
 app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
@@ -486,7 +519,7 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
       console.warn('Audit log failed for usuario_enable:', e);
     }
 
-    return res.status(200).json(result);
+    return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('API exception PATCH enable usuario:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -495,6 +528,7 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
 
 /**
  * DELETE /api/usuarios/:id (soft delete)
+ * Requiere authenticateJwtAdmin
  */
 app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
@@ -523,6 +557,22 @@ app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
       return res.status(200).json({ success: true, message: 'Usuario ya inhabilitado' });
     }
 
+    const updated = Array.isArray(data) && data.length ? data[0] : data;
+
+    try {
+      await insertAuditLog({
+        actor_id: req.user.id,
+        actor_username: req.user.username,
+        action: 'usuario_disable',
+        target_table: 'usuarios',
+        target_id: id,
+        metadata: { after: updated },
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for usuario_disable (DELETE):', e);
+    }
+
     return res.status(200).json({ success: true, message: 'Usuario inhabilitado' });
   } catch (err) {
     console.error('API exception DELETE usuario (soft):', err);
@@ -532,6 +582,7 @@ app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
 
 /**
  * GET /api/mis-datos
+ * Protegida por authenticateJwt
  */
 app.get('/api/mis-datos', authenticateJwt, async (req, res) => {
   try {
@@ -549,7 +600,8 @@ app.get('/api/mis-datos', authenticateJwt, async (req, res) => {
 
     if (!data || data.length === 0) return respondError(res, 404, 'Usuario no encontrado');
 
-    return res.status(200).json(data[0]);
+    const user = data[0];
+    return res.status(200).json({ success: true, data: user });
   } catch (err) {
     console.error('GET /api/mis-datos error:', err);
     return respondError(res, 500, 'Error interno', String(err));
