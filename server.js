@@ -20,10 +20,10 @@ const allowedOrigins = rawOrigins ? rawOrigins.split(',').map(s => s.trim()).fil
 
 app.use(
   cors({
-    origin: allowedOrigins.length > 0 ? allowedOrigins : '*', // Usar dominios específicos o '*' si no hay ninguno
+    origin: allowedOrigins.length > 0 ? allowedOrigins : '*',
     allowedHeaders: ['Content-Type', 'x-admin-token', 'authorization'],
-    exposedHeaders: ['Content-Type', 'x-admin-token', 'X-Users-Count', 'X-Products-Count', 'X-Categories-Count'], // Agregar X-Categories-Count
-    credentials: true, // Importante si se envían cookies o credenciales
+    exposedHeaders: ['Content-Type', 'x-admin-token', 'X-Users-Count', 'X-Products-Count'],
+    credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   })
 );
@@ -48,7 +48,6 @@ const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN || null;
 if (!ADMIN_API_TOKEN) {
   console.warn('ADVERTENCIA: ADMIN_API_TOKEN no está definido. Si el frontend usa x-admin-token, configúralo en el servidor.');
 }
-
 const isAdminRequestHeader = (req) => {
   const token = req.headers['x-admin-token'] || null;
   if (!ADMIN_API_TOKEN) return false;
@@ -85,7 +84,6 @@ const authenticateJwt = async (req, res, next) => {
   try {
     const auth = req.headers.authorization || '';
     if (!auth.startsWith('Bearer ')) return res.status(401).json({ success: false, message: 'No autorizado' });
-
     const token = auth.split(' ')[1];
     const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
     if (!secret) return res.status(500).json({ success: false, message: 'JWT secret no configurado en servidor' });
@@ -147,7 +145,6 @@ const authenticateJwtAdmin = async (req, res, next) => {
 const insertAuditLog = async ({ actor_id = null, actor_username = null, action, target_table = null, target_id = null, reason = null, metadata = null, ip = null }) => {
   try {
     if (!supabaseAdmin) return false;
-
     const payload = {
       actor_id,
       actor_username,
@@ -158,7 +155,6 @@ const insertAuditLog = async ({ actor_id = null, actor_username = null, action, 
       metadata,
       ip
     };
-
     const { error } = await supabaseAdmin.from('audit_logs').insert([payload]);
     if (error) {
       console.warn('insertAuditLog supabase error:', error);
@@ -200,7 +196,7 @@ app.patch('/admin/usuarios/:id/:action', /* authenticateJwtAdmin, */ async (req,
         'Content-Type': 'application/json',
         'x-admin-token': ADMIN_API_TOKEN
       },
-      validateStatus: () => true // Permite cualquier código de estado para manejarlo después
+      validateStatus: () => true
     });
 
     return res.status(resp.status).send(resp.data);
@@ -236,7 +232,7 @@ app.post('/api/login', async (req, res) => {
         if (email) {
           query = query.eq('email', identifier);
         } else {
-          const safe = String(identifier).replace(/"/g, '\\"'); // Escapar comillas dobles para or
+          const safe = String(identifier).replace(/"/g, '\\"');
           query = query.or(`username.eq."${safe}",email.eq."${safe}"`).limit(1);
         }
 
@@ -248,8 +244,9 @@ app.post('/api/login', async (req, res) => {
     };
 
     let usersResult = await queryUserFromTable('usuarios');
+
     if (usersResult.error) {
-      usersResult = await queryUserFromTable('users'); // Intentar tabla 'users' si 'usuarios' falla
+      usersResult = await queryUserFromTable('users');
     }
 
     if (usersResult.error) {
@@ -259,7 +256,6 @@ app.post('/api/login', async (req, res) => {
 
     const users = usersResult.data;
     const user = Array.isArray(users) && users.length > 0 ? users[0] : null;
-
     if (!user) {
       return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
     }
@@ -303,22 +299,14 @@ app.post('/api/login', async (req, res) => {
 /**
  * GET /api/productos
  * Devuelve siempre un array (frontend espera array en resp.data)
- * Ahora incluye lógica para mostrar inactivos si se solicita explícitamente.
  */
 app.get('/api/productos', async (req, res) => {
   try {
-    if (!supabaseAdmin) {
-      console.error('GET /api/productos - supabaseAdmin no inicializado');
-      return res.status(200).json([]); // Devolver array vacío para no romper frontend
-    }
-
     const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
-
-    console.log('GET /api/productos - includeInactivos:', includeInactivos);
 
     let query = supabaseAdmin
       .from('productos')
-      .select('id, product_id, nombre, precio, cantidad, categoria_id, deleted_at') // Asegurar que se selecciona deleted_at
+      .select('id, product_id, nombre, precio, cantidad, categoria_id, deleted_at')
       .order('id', { ascending: true });
 
     if (!includeInactivos) query = query.is('deleted_at', null);
@@ -327,70 +315,16 @@ app.get('/api/productos', async (req, res) => {
 
     if (error) {
       console.error('GET /api/productos - supabase error:', error);
-      // Devolver array vacío para evitar crash en frontend
+      // devolver array vacío para evitar crash en frontend
       return res.status(200).json([]);
     }
 
-    // Normalizar datos para incluir el campo status
-    const normalized = (Array.isArray(data) ? data : []).map(p => ({
-      ...p,
-      status: p.deleted_at ? 'inactive' : 'active'
-    }));
-
-    res.setHeader('X-Products-Count', normalized.length);
-    return res.status(200).json(normalized);
+    return res.status(200).json(Array.isArray(data) ? data : []);
   } catch (err) {
     console.error('API exception GET /api/productos:', err);
-    return res.status(200).json([]); // Devolver array vacío para evitar crash en frontend
+    return res.status(200).json([]);
   }
 });
-
-/**
- * GET /api/categorias
- * Devuelve siempre un array (frontend espera array en resp.data)
- * Ahora incluye lógica para mostrar inactivos si se solicita explícitamente.
- */
-app.get('/api/categorias', async (req, res) => {
-  try {
-    if (!supabaseAdmin) {
-      console.error('GET /api/categorias - supabaseAdmin no inicializado');
-      return res.status(200).json([]); // Devolver array vacío para no romper frontend
-    }
-
-    const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
-
-    console.log('GET /api/categorias - includeInactivos:', includeInactivos);
-
-    let query = supabaseAdmin
-      .from('categorias') // Asegurar que la tabla se llama 'categorias'
-      .select('id, nombre, descripcion, deleted_at') // Asegurar que se selecciona deleted_at y otros campos necesarios
-      .order('id', { ascending: true });
-
-    if (!includeInactivos) query = query.is('deleted_at', null);
-
-    const { data, error } = await query;
-
-    if (error) {
-      console.error('GET /api/categorias - supabase error:', error);
-      // Devolver array vacío para evitar crash en frontend
-      return res.status(200).json([]);
-    }
-
-    // Normalizar datos para incluir el campo status
-    const normalized = (Array.isArray(data) ? data : []).map(c => ({
-      ...c,
-      status: c.deleted_at ? 'inactive' : 'active'
-    }));
-
-    res.setHeader('X-Categories-Count', normalized.length);
-    return res.status(200).json(normalized);
-  } catch (err) {
-    console.error('API exception GET /api/categorias:', err);
-    return res.status(200).json([]); // Devolver array vacío para evitar crash en frontend
-  }
-});
-
-
 
 /**
  * GET /api/usuarios
@@ -579,14 +513,13 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
   }
 
   const { id } = req.params;
-
   try {
     if (!supabaseAdmin) return respondError(res, 500, 'Supabase no inicializado en servidor');
 
     const { data, error } = await supabaseAdmin
       .from('productos')
       .update({ deleted_at: new Date().toISOString() })
-      .or(`id.eq.${id},product_id.eq.${id}`) // Buscar por id o product_id
+      .or(`id.eq.${id},product_id.eq.${id}`)
       .select();
 
     if (error) {
@@ -594,9 +527,7 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
       return respondError(res, 500, 'No se pudo inhabilitar el producto', error);
     }
 
-    if (!data || data.length === 0) return respondError(res, 404, 'Producto no encontrado');
-
-    const result = Array.isArray(data) ? data[0] : data; // Asegurar que sea un objeto único
+    const result = Array.isArray(data) ? data : [data];
     return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('API exception PATCH disable:', err);
@@ -615,14 +546,13 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
   }
 
   const { id } = req.params;
-
   try {
     if (!supabaseAdmin) return respondError(res, 500, 'Supabase no inicializado en servidor');
 
     const { data, error } = await supabaseAdmin
       .from('productos')
       .update({ deleted_at: null })
-      .or(`id.eq.${id},product_id.eq.${id}`) // Buscar por id o product_id
+      .or(`id.eq.${id},product_id.eq.${id}`)
       .select();
 
     if (error) {
@@ -630,89 +560,13 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
       return respondError(res, 500, 'No se pudo habilitar el producto', error);
     }
 
-    if (!data || data.length === 0) return respondError(res, 404, 'Producto no encontrado');
-
-    const result = Array.isArray(data) ? data[0] : data; // Asegurar que sea un objeto único
+    const result = Array.isArray(data) ? data : [data];
     return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('API exception PATCH enable:', err);
     return respondError(res, 500, 'Error interno', String(err));
   }
 });
-
-/**
- * PATCH /api/categorias/:id/disable
- * Requiere x-admin-token
- */
-app.patch('/api/categorias/:id/disable', async (req, res) => {
-  if (!isAdminRequestHeader(req)) {
-    console.warn('PATCH disable categoria - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
-    return respondError(res, 403, 'Forbidden');
-  }
-
-  const { id } = req.params;
-
-  try {
-    if (!supabaseAdmin) return respondError(res, 500, 'Supabase no inicializado en servidor');
-
-    const { data, error } = await supabaseAdmin
-      .from('categorias') // Asegurar que la tabla se llama 'categorias'
-      .update({ deleted_at: new Date().toISOString() })
-      .eq('id', id) // Suponiendo que el id de categoría es UUID y coincide con el parámetro
-      .select();
-
-    if (error) {
-      console.error('API error updating categoria disable:', error);
-      return respondError(res, 500, 'No se pudo inhabilitar la categoría', error);
-    }
-
-    if (!data || data.length === 0) return respondError(res, 404, 'Categoría no encontrada');
-
-    const result = Array.isArray(data) ? data[0] : data; // Asegurar que sea un objeto único
-    return res.status(200).json({ success: true, data: result });
-  } catch (err) {
-    console.error('API exception PATCH disable categoria:', err);
-    return respondError(res, 500, 'Error interno', String(err));
-  }
-});
-
-/**
- * PATCH /api/categorias/:id/enable
- * Requiere x-admin-token
- */
-app.patch('/api/categorias/:id/enable', async (req, res) => {
-  if (!isAdminRequestHeader(req)) {
-    console.warn('PATCH enable categoria - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
-    return respondError(res, 403, 'Forbidden');
-  }
-
-  const { id } = req.params;
-
-  try {
-    if (!supabaseAdmin) return respondError(res, 500, 'Supabase no inicializado en servidor');
-
-    const { data, error } = await supabaseAdmin
-      .from('categorias') // Asegurar que la tabla se llama 'categorias'
-      .update({ deleted_at: null })
-      .eq('id', id) // Suponiendo que el id de categoría es UUID y coincide con el parámetro
-      .select();
-
-    if (error) {
-      console.error('API error updating categoria enable:', error);
-      return respondError(res, 500, 'No se pudo habilitar la categoría', error);
-    }
-
-    if (!data || data.length === 0) return respondError(res, 404, 'Categoría no encontrada');
-
-    const result = Array.isArray(data) ? data[0] : data; // Asegurar que sea un objeto único
-    return res.status(200).json({ success: true, data: result });
-  } catch (err) {
-    console.error('API exception PATCH enable categoria:', err);
-    return respondError(res, 500, 'Error interno', String(err));
-  }
-});
-
-
 
 /**
  * DELETE /api/usuarios/:id (soft delete)
@@ -729,7 +583,7 @@ app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
       .from('usuarios')
       .update({ deleted_at: new Date().toISOString() })
       .eq('id', id)
-      .is('deleted_at', null) // Solo si no está ya eliminado
+      .is('deleted_at', null)
       .select();
 
     if (error) {
@@ -738,7 +592,6 @@ app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
     }
 
     if (!data || data.length === 0) {
-      // Verificar si el usuario existe pero ya está eliminado
       const { data: exists, error: errExists } = await supabaseAdmin.from('usuarios').select('id, deleted_at').eq('id', id).limit(1);
       if (errExists) {
         console.error('Error comprobando existencia usuario tras intento delete:', errExists);
@@ -780,7 +633,6 @@ app.get('/api/mis-datos', authenticateJwt, async (req, res) => {
     if (!supabaseAdmin) return respondError(res, 500, 'Supabase no inicializado en servidor');
 
     const userId = req.user.id;
-
     const { data, error } = await supabaseAdmin
       .from('usuarios')
       .select('id, email, username, nombres, apellidos, role, deleted_at')
