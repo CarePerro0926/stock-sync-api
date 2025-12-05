@@ -52,31 +52,6 @@ const isAdminRequest = (req) => {
   return !!token && token === process.env.ADMIN_API_TOKEN;
 };
 
-// --- UTILIDADES ---
-const respondError = (res, status = 500, message = 'Error interno', details = null) => {
-  const payload = { success: false, message };
-  if (details) payload.error = details;
-  return res.status(status).json(payload);
-};
-
-const isUuid = (s) => {
-  if (typeof s !== 'string') return false;
-  return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(s);
-};
-
-const isValidIdFlexible = (id) => {
-  if (typeof id !== 'string') return false;
-  if (id.length === 0) return false;
-  return true;
-};
-
-// Logging temporal (no exponer secretos)
-app.use((req, res, next) => {
-  const hasAdminHeader = !!req.headers['x-admin-token'];
-  console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl} - x-admin-token present: ${hasAdminHeader}`);
-  next();
-});
-
 // --- MIDDLEWARES ---
 // authenticateJwt: valida token y que usuario no esté inhabilitado
 const authenticateJwt = async (req, res, next) => {
@@ -144,42 +119,34 @@ const authenticateJwtAdmin = async (req, res, next) => {
 };
 // --- FIN MIDDLEWARES ---
 
-// --- AUDIT LOG HELPER ---
-const insertAuditLog = async ({ actor_id = null, actor_username = null, action, target_table = null, target_id = null, reason = null, metadata = null, ip = null }) => {
-  try {
-    const payload = {
-      actor_id,
-      actor_username,
-      action,
-      target_table,
-      target_id: target_id ? String(target_id) : null,
-      reason,
-      metadata,
-      ip
-    };
-    const { error } = await supabaseAdmin.from('audit_logs').insert([payload]);
-    if (error) {
-      console.warn('insertAuditLog supabase error:', error);
-      return false;
-    }
-    return true;
-  } catch (err) {
-    console.warn('insertAuditLog exception:', err);
-    return false;
-  }
+const respondError = (res, status = 500, message = 'Error interno', details = null) => {
+  const payload = { success: false, message };
+  if (details) payload.error = details;
+  return res.status(status).json(payload);
 };
+
+// Logging temporal (no exponer secretos)
+app.use((req, res, next) => {
+  const hasAdminHeader = !!req.headers['x-admin-token'];
+  console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl} - x-admin-token present: ${hasAdminHeader}`);
+  next();
+});
+
+// Utilidad simple para validar UUID (versión básica)
+const isValidId = (id) => typeof id === 'string' && id.length > 0;
 
 // --- RUTAS ---
 
 /**
  * ADMIN PROXY
  * Protegido por authenticateJwtAdmin para evitar exponer ADMIN_API_TOKEN al cliente.
+ * Si prefieres usar x-admin-token desde cliente, quita authenticateJwtAdmin y mantén isAdminRequest.
  */
 app.patch('/admin/usuarios/:id/:action', authenticateJwtAdmin, async (req, res) => {
   try {
     const { id, action } = req.params;
 
-    if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
+    if (!isValidId(id)) return respondError(res, 400, 'ID inválido');
 
     if (action !== 'enable' && action !== 'disable') {
       return respondError(res, 400, 'Acción inválida. Solo se permite "enable" o "disable".');
@@ -193,6 +160,7 @@ app.patch('/admin/usuarios/:id/:action', authenticateJwtAdmin, async (req, res) 
     const API_USUARIOS_BASE = process.env.API_USUARIOS_BASE || process.env.API_INTERNAL_BASE || 'https://la-api-externa-que-tiene-los-usuarios.com';
     const url = `${API_USUARIOS_BASE}/api/usuarios/${id}/${action}`;
 
+    // Reenvío con token de servidor (no exponer al cliente)
     const resp = await axios.patch(url, null, {
       headers: {
         'Content-Type': 'application/json',
@@ -218,6 +186,7 @@ app.post('/api/login', async (req, res) => {
     const username = body.username || body.user || null;
     const password = body.password || body.pass || null;
 
+    const identifierType = email ? 'email' : username ? 'username' : 'none';
     if (!password || (!email && !username)) {
       return res.status(400).json({ success: false, message: 'Faltan credenciales' });
     }
@@ -300,7 +269,7 @@ app.post('/api/login', async (req, res) => {
 /**
  * GET /api/productos
  * Por defecto devuelve solo productos activos (deleted_at IS NULL).
- * Si ?include_inactivos=true se devuelven todos.
+ * Si ?include_inactivos=true se devuelven todos (solo para admin idealmente).
  */
 app.get('/api/productos', async (req, res) => {
   try {
@@ -332,7 +301,7 @@ app.get('/api/productos', async (req, res) => {
 /**
  * GET /api/usuarios
  * Por defecto devuelve solo usuarios activos (deleted_at IS NULL).
- * ?include_inactivos=true para listar también inactivos.
+ * ?include_inactivos=true para listar también inactivos (debe usarse con cuidado).
  */
 app.get('/api/usuarios', async (req, res) => {
   try {
@@ -357,7 +326,7 @@ app.get('/api/usuarios', async (req, res) => {
 
 /**
  * PATCH /api/productos/:id/disable
- * Requiere header x-admin-token (server-side).
+ * Requiere header x-admin-token (server-side) o authenticateJwtAdmin si quieres validar JWT admin.
  */
 app.patch('/api/productos/:id/disable', async (req, res) => {
   if (!isAdminRequest(req)) {
@@ -366,13 +335,9 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
   }
 
   const { id } = req.params;
-  if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
+  if (!isValidId(id)) return respondError(res, 400, 'ID inválido');
 
   try {
-    // obtener estado previo
-    const { data: prevData } = await supabaseAdmin.from('productos').select('*').or(`id.eq.${id},product_id.eq.${id}`).limit(1);
-    const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
-
     const { data, error } = await supabaseAdmin
       .from('productos')
       .update({ deleted_at: new Date().toISOString() })
@@ -382,24 +347,6 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
     if (error) {
       console.error('API error updating producto disable:', error);
       return respondError(res, 500, 'No se pudo inhabilitar el producto', error.message || String(error));
-    }
-
-    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
-
-    // insertar audit log (no bloquear la respuesta si falla)
-    try {
-      await insertAuditLog({
-        actor_id: null,
-        actor_username: null,
-        action: 'producto_disable',
-        target_table: 'productos',
-        target_id: id,
-        reason: req.body?.reason || null,
-        metadata: { before: previousRow, after: updatedRow },
-        ip: req.ip
-      });
-    } catch (e) {
-      console.warn('Audit log failed for producto_disable:', e);
     }
 
     return res.status(200).json({ success: true, data: Array.isArray(data) ? data : [data] });
@@ -419,12 +366,9 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
   }
 
   const { id } = req.params;
-  if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
+  if (!isValidId(id)) return respondError(res, 400, 'ID inválido');
 
   try {
-    const { data: prevData } = await supabaseAdmin.from('productos').select('*').or(`id.eq.${id},product_id.eq.${id}`).limit(1);
-    const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
-
     const { data, error } = await supabaseAdmin
       .from('productos')
       .update({ deleted_at: null })
@@ -434,23 +378,6 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
     if (error) {
       console.error('API error updating producto enable:', error);
       return respondError(res, 500, 'No se pudo habilitar el producto', error.message || String(error));
-    }
-
-    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
-
-    try {
-      await insertAuditLog({
-        actor_id: null,
-        actor_username: null,
-        action: 'producto_enable',
-        target_table: 'productos',
-        target_id: id,
-        reason: req.body?.reason || null,
-        metadata: { before: previousRow, after: updatedRow },
-        ip: req.ip
-      });
-    } catch (e) {
-      console.warn('Audit log failed for producto_enable:', e);
     }
 
     return res.status(200).json({ success: true, data: Array.isArray(data) ? data : [data] });
@@ -466,15 +393,10 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
  */
 app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
-  if (!isUuid(id)) return respondError(res, 400, 'ID inválido');
+  if (!isValidId(id)) return respondError(res, 400, 'ID inválido');
 
   try {
     const actor = req.user && req.user.id ? req.user.id : null;
-    const actor_username = req.user && req.user.username ? req.user.username : null;
-
-    const { data: prevData } = await supabaseAdmin.from('usuarios').select('*').eq('id', id).limit(1);
-    const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
-
     const { data, error } = await supabaseAdmin
       .from('usuarios')
       .update({ deleted_at: new Date().toISOString() })
@@ -490,25 +412,8 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
       return respondError(res, 404, 'Usuario no encontrado');
     }
 
-    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
-
-    try {
-      await insertAuditLog({
-        actor_id: actor,
-        actor_username,
-        action: 'usuario_disable',
-        target_table: 'usuarios',
-        target_id: id,
-        reason: req.body?.reason || null,
-        metadata: { before: previousRow, after: updatedRow },
-        ip: req.ip
-      });
-    } catch (e) {
-      console.warn('Audit log failed for usuario_disable:', e);
-    }
-
     console.log(`Usuario ${id} inhabilitado por actor ${actor}`);
-    return res.status(200).json({ success: true, data: updatedRow });
+    return res.status(200).json({ success: true, data: Array.isArray(data) ? data[0] : data });
   } catch (err) {
     console.error('API exception PATCH disable usuario:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -520,15 +425,10 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
  */
 app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
-  if (!isUuid(id)) return respondError(res, 400, 'ID inválido');
+  if (!isValidId(id)) return respondError(res, 400, 'ID inválido');
 
   try {
     const actor = req.user && req.user.id ? req.user.id : null;
-    const actor_username = req.user && req.user.username ? req.user.username : null;
-
-    const { data: prevData } = await supabaseAdmin.from('usuarios').select('*').eq('id', id).limit(1);
-    const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
-
     const { data, error } = await supabaseAdmin
       .from('usuarios')
       .update({ deleted_at: null })
@@ -544,25 +444,8 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
       return respondError(res, 404, 'Usuario no encontrado');
     }
 
-    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
-
-    try {
-      await insertAuditLog({
-        actor_id: actor,
-        actor_username,
-        action: 'usuario_enable',
-        target_table: 'usuarios',
-        target_id: id,
-        reason: req.body?.reason || null,
-        metadata: { before: previousRow, after: updatedRow },
-        ip: req.ip
-      });
-    } catch (e) {
-      console.warn('Audit log failed for usuario_enable:', e);
-    }
-
     console.log(`Usuario ${id} habilitado por actor ${actor}`);
-    return res.status(200).json({ success: true, data: updatedRow });
+    return res.status(200).json({ success: true, data: Array.isArray(data) ? data[0] : data });
   } catch (err) {
     console.error('API exception PATCH enable usuario:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -576,14 +459,10 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
  */
 app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
-  if (!isUuid(id)) return respondError(res, 400, 'ID inválido');
+  if (!isValidId(id)) return respondError(res, 400, 'ID inválido');
 
   try {
     const actor = req.user && req.user.id ? req.user.id : null;
-    const actor_username = req.user && req.user.username ? req.user.username : null;
-
-    const { data: prevData } = await supabaseAdmin.from('usuarios').select('*').eq('id', id).limit(1);
-    const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
 
     // Solo marcar deleted_at si aún es NULL
     const { data, error } = await supabaseAdmin
@@ -599,6 +478,8 @@ app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
     }
 
     if (!data || data.length === 0) {
+      // Puede ser que no exista o ya esté inhabilitado
+      // Intentar comprobar existencia
       const { data: exists, error: errExists } = await supabaseAdmin.from('usuarios').select('id, deleted_at').eq('id', id).limit(1);
       if (errExists) {
         console.error('Error comprobando existencia usuario tras intento delete:', errExists);
@@ -608,23 +489,6 @@ app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
         return respondError(res, 404, 'Usuario no encontrado');
       }
       return res.status(200).json({ success: true, message: 'Usuario ya inhabilitado' });
-    }
-
-    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
-
-    try {
-      await insertAuditLog({
-        actor_id: actor,
-        actor_username,
-        action: 'usuario_disable',
-        target_table: 'usuarios',
-        target_id: id,
-        reason: req.body?.reason || null,
-        metadata: { before: previousRow, after: updatedRow },
-        ip: req.ip
-      });
-    } catch (e) {
-      console.warn('Audit log failed for usuario_disable (DELETE):', e);
     }
 
     console.log(`Usuario ${id} inhabilitado (DELETE soft) por actor ${actor}`);
