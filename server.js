@@ -32,7 +32,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
 
 if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
-  console.error('Falta SUPABASE_URL o SUPABASE_SERVICE_KEY en variables de entorno');
+  console.error('FATAL: Falta SUPABASE_URL o SUPABASE_SERVICE_KEY en variables de entorno');
+  // No continuar si no hay credenciales de supabase, porque las consultas fallarán.
   process.exit(1);
 }
 
@@ -41,7 +42,7 @@ const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
 
 // ADMIN token check (server-to-server)
 if (!process.env.ADMIN_API_TOKEN) {
-  console.warn('ADVERTENCIA: ADMIN_API_TOKEN no está definido. Las rutas admin que dependan de él fallarán si se usan.');
+  console.warn('ADVERTENCIA: ADMIN_API_TOKEN no está definido. Algunas rutas admin pueden requerir JWT admin.');
 }
 const isAdminRequest = (req) => {
   const token = req.headers['x-admin-token'] || null;
@@ -92,7 +93,7 @@ const authenticateJwt = async (req, res, next) => {
 
     if (error) {
       console.error('authenticateJwt supabase error:', error);
-      return res.status(500).json({ success: false, message: 'Error al validar usuario' });
+      return res.status(500).json({ success: false, message: 'Error al validar usuario', error });
     }
 
     if (!data || data.length === 0) return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
@@ -159,7 +160,6 @@ const insertAuditLog = async ({ actor_id = null, actor_username = null, action, 
 
 /**
  * ADMIN PROXY
- * Proxy para reenviar acciones admin a API externa usando ADMIN_API_TOKEN del servidor.
  */
 app.patch('/admin/usuarios/:id/:action', /* authenticateJwtAdmin, */ async (req, res) => {
   try {
@@ -264,7 +264,6 @@ app.post('/api/login', async (req, res) => {
 
 /**
  * GET /api/productos
- * Devuelve array directamente.
  */
 app.get('/api/productos', async (req, res) => {
   try {
@@ -284,7 +283,7 @@ app.get('/api/productos', async (req, res) => {
     }
 
     res.setHeader('X-Products-Count', Array.isArray(data) ? data.length : 0);
-    return res.status(200).json(data || []);
+    return res.status(200).json({ success: true, data: data || [] });
   } catch (err) {
     console.error('API exception GET /api/productos:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -293,10 +292,9 @@ app.get('/api/productos', async (req, res) => {
 
 /**
  * GET /api/usuarios
- * - Detecta si la petición viene de admin (x-admin-token o JWT con role administrador).
- * - Si es admin, incluye inactivos por defecto (a menos que se pida lo contrario).
- * - Devuelve array directamente y añade header X-Users-Count.
- * - Normaliza cada usuario con campo status: 'active' | 'inactive'
+ * - Detecta admin por x-admin-token o JWT con role administrador.
+ * - Si es admin, incluye inactivos por defecto (o si se pasa ?include_inactivos=true).
+ * - Devuelve { success: true, data: [...] } y añade status en cada usuario.
  */
 app.get('/api/usuarios', async (req, res) => {
   try {
@@ -332,7 +330,7 @@ app.get('/api/usuarios', async (req, res) => {
     const { data, error } = await query;
     if (error) {
       console.warn('GET /api/usuarios - supabase error:', error.message || error);
-      return res.status(200).json({ success: true, data: [] });
+      return respondError(res, 500, 'Error al obtener usuarios', error);
     }
 
     const normalized = (data || []).map(u => ({
@@ -344,13 +342,12 @@ app.get('/api/usuarios', async (req, res) => {
     return res.status(200).json({ success: true, data: normalized });
   } catch (err) {
     console.warn('GET /api/usuarios - exception:', String(err));
-    return res.status(200).json({ success: true, data: [] });
+    return respondError(res, 500, 'Error interno', String(err));
   }
 });
 
 /**
  * PATCH /api/productos/:id/disable
- * Requiere x-admin-token
  */
 app.patch('/api/productos/:id/disable', async (req, res) => {
   if (!isAdminRequest(req)) {
@@ -381,7 +378,6 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
 
 /**
  * PATCH /api/productos/:id/enable
- * Requiere x-admin-token
  */
 app.patch('/api/productos/:id/enable', async (req, res) => {
   if (!isAdminRequest(req)) {
