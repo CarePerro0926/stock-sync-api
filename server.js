@@ -302,7 +302,7 @@ app.post('/api/login', async (req, res) => {
  * Por defecto devuelve solo productos activos (deleted_at IS NULL).
  * Si ?include_inactivos=true se devuelven todos.
  *
- * CORRECCIÓN: devolver directamente un array (compatibilidad con frontend).
+ * Devuelve directamente un array (compatibilidad con frontend).
  */
 app.get('/api/productos', async (req, res) => {
   try {
@@ -336,7 +336,8 @@ app.get('/api/productos', async (req, res) => {
  * - Por defecto devuelve solo usuarios activos (deleted_at IS NULL).
  * - Si la petición viene de un admin (x-admin-token o JWT con role=administrador),
  *   muestra inactivos por defecto.
- * - Si se pasa ?include_inactivos=true se respetará (pero solo si la petición es admin o el parámetro es true).
+ * - Si se pasa ?include_inactivos=true se respetará.
+ *
  * Devuelve directamente un array para compatibilidad con el frontend.
  */
 app.get('/api/usuarios', async (req, res) => {
@@ -348,7 +349,7 @@ app.get('/api/usuarios', async (req, res) => {
     if (isAdminRequest(req)) {
       isAdmin = true;
     } else {
-      // b) intentar leer JWT sin ejecutar middleware (no queremos responder aquí)
+      // b) intentar leer JWT sin ejecutar middleware
       const auth = req.headers.authorization || '';
       const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
       if (auth.startsWith('Bearer ') && secret) {
@@ -378,11 +379,9 @@ app.get('/api/usuarios', async (req, res) => {
 
     if (error) {
       console.warn('GET /api/usuarios - supabase returned error:', error.message || error);
-      // devolver array vacío para mantener compatibilidad con frontend que espera un array
       return res.status(200).json([]);
     }
 
-    // 4) devolver array directamente
     return res.status(200).json(data || []);
   } catch (err) {
     console.warn('GET /api/usuarios - exception:', String(err));
