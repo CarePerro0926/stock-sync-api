@@ -61,8 +61,6 @@ const isUuid = (s) => {
   if (typeof s !== 'string') return false;
   return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(s);
 };
-
-const isValidIdFlexible = (id) => typeof id === 'string' && id.length > 0;
 // --- FIN UTILIDADES ---
 
 // --- LOGGING SIMPLE ---
@@ -130,7 +128,7 @@ const authenticateJwtAdmin = async (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Token inválido' });
   }
 };
-// --- FIN AUTH MIDDLEWARES ---
+// --- FIN MIDDLEWARES ---
 
 // --- AUDIT LOG HELPER ---
 const insertAuditLog = async ({ actor_id = null, actor_username = null, action, target_table = null, target_id = null, reason = null, metadata = null, ip = null }) => {
@@ -162,7 +160,6 @@ const insertAuditLog = async ({ actor_id = null, actor_username = null, action, 
 
 /**
  * ADMIN PROXY
- * Proxy para reenviar acciones admin a API externa usando ADMIN_API_TOKEN del servidor.
  */
 app.patch('/admin/usuarios/:id/:action', /* authenticateJwtAdmin, */ async (req, res) => {
   try {
