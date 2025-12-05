@@ -301,6 +301,8 @@ app.post('/api/login', async (req, res) => {
  * GET /api/productos
  * Por defecto devuelve solo productos activos (deleted_at IS NULL).
  * Si ?include_inactivos=true se devuelven todos.
+ *
+ * CORRECCIÓN: devolver directamente un array (compatibilidad con frontend).
  */
 app.get('/api/productos', async (req, res) => {
   try {
@@ -319,13 +321,13 @@ app.get('/api/productos', async (req, res) => {
 
     if (error) {
       console.error('GET /api/productos - supabase error:', error.message || error);
-      return respondError(res, 500, 'No se pudo obtener productos', error.message || String(error));
+      return res.status(200).json([]);
     }
 
-    return res.status(200).json({ success: true, data: data || [] });
+    return res.status(200).json(data || []);
   } catch (err) {
     console.error('API exception GET /api/productos:', err);
-    return respondError(res, 500, 'Error interno', String(err));
+    return res.status(200).json([]);
   }
 });
 
@@ -333,6 +335,8 @@ app.get('/api/productos', async (req, res) => {
  * GET /api/usuarios
  * Por defecto devuelve solo usuarios activos (deleted_at IS NULL).
  * ?include_inactivos=true para listar también inactivos.
+ *
+ * CORRECCIÓN: devolver directamente un array (compatibilidad con frontend).
  */
 app.get('/api/usuarios', async (req, res) => {
   try {
@@ -345,13 +349,13 @@ app.get('/api/usuarios', async (req, res) => {
 
     if (error) {
       console.warn('GET /api/usuarios - supabase returned error:', error.message || error);
-      return res.status(200).json({ success: true, data: [] });
+      return res.status(200).json([]);
     }
 
-    return res.status(200).json({ success: true, data: data || [] });
+    return res.status(200).json(data || []);
   } catch (err) {
     console.warn('GET /api/usuarios - exception:', String(err));
-    return res.status(200).json({ success: true, data: [] });
+    return res.status(200).json([]);
   }
 });
 
