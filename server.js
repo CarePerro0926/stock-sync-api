@@ -20,7 +20,7 @@ app.use(
   cors({
     origin: allowedOrigins.length > 0 ? allowedOrigins : '*',
     allowedHeaders: ['Content-Type', 'x-admin-token', 'authorization'],
-    exposedHeaders: ['Content-Type', 'x-admin-token', 'X-Users-Count'],
+    exposedHeaders: ['Content-Type', 'x-admin-token', 'X-Users-Count', 'X-Products-Count'],
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   })
@@ -296,6 +296,7 @@ app.get('/api/productos', async (req, res) => {
  * - Detecta si la petición viene de admin (x-admin-token o JWT con role administrador).
  * - Si es admin, incluye inactivos por defecto (a menos que se pida lo contrario).
  * - Devuelve array directamente y añade header X-Users-Count.
+ * - Normaliza cada usuario con campo status: 'active' | 'inactive'
  */
 app.get('/api/usuarios', async (req, res) => {
   try {
@@ -331,14 +332,19 @@ app.get('/api/usuarios', async (req, res) => {
     const { data, error } = await query;
     if (error) {
       console.warn('GET /api/usuarios - supabase error:', error.message || error);
-      return res.status(200).json([]);
+      return res.status(200).json({ success: true, data: [] });
     }
 
-    res.setHeader('X-Users-Count', Array.isArray(data) ? data.length : 0);
-    return res.status(200).json(data || []);
+    const normalized = (data || []).map(u => ({
+      ...u,
+      status: u.deleted_at ? 'inactive' : 'active'
+    }));
+
+    res.setHeader('X-Users-Count', Array.isArray(normalized) ? normalized.length : 0);
+    return res.status(200).json({ success: true, data: normalized });
   } catch (err) {
     console.warn('GET /api/usuarios - exception:', String(err));
-    return res.status(200).json([]);
+    return res.status(200).json({ success: true, data: [] });
   }
 });
 
@@ -432,7 +438,8 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
 
     if (!data || data.length === 0) return respondError(res, 404, 'Usuario no encontrado');
 
-    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
+    const updated = Array.isArray(data) ? data[0] : data;
+    const result = { ...updated, status: updated.deleted_at ? 'inactive' : 'active' };
 
     try {
       await insertAuditLog({
@@ -442,7 +449,7 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
         target_table: 'usuarios',
         target_id: id,
         reason: req.body?.reason || null,
-        metadata: { before: previousRow, after: updatedRow },
+        metadata: { before: previousRow, after: result },
         ip: req.ip
       });
     } catch (e) {
@@ -450,7 +457,7 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
     }
 
     console.log(`Usuario ${id} inhabilitado por actor ${actor}`);
-    return res.status(200).json({ success: true, data: updatedRow });
+    return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('API exception PATCH disable usuario:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -485,7 +492,8 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
 
     if (!data || data.length === 0) return respondError(res, 404, 'Usuario no encontrado');
 
-    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
+    const updated = Array.isArray(data) ? data[0] : data;
+    const result = { ...updated, status: updated.deleted_at ? 'inactive' : 'active' };
 
     try {
       await insertAuditLog({
@@ -495,7 +503,7 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
         target_table: 'usuarios',
         target_id: id,
         reason: req.body?.reason || null,
-        metadata: { before: previousRow, after: updatedRow },
+        metadata: { before: previousRow, after: result },
         ip: req.ip
       });
     } catch (e) {
@@ -503,7 +511,7 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
     }
 
     console.log(`Usuario ${id} habilitado por actor ${actor}`);
-    return res.status(200).json({ success: true, data: updatedRow });
+    return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('API exception PATCH enable usuario:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -547,7 +555,7 @@ app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
       return res.status(200).json({ success: true, message: 'Usuario ya inhabilitado' });
     }
 
-    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
+    const updated = Array.isArray(data) && data.length ? data[0] : data;
 
     try {
       await insertAuditLog({
@@ -557,7 +565,7 @@ app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
         target_table: 'usuarios',
         target_id: id,
         reason: req.body?.reason || null,
-        metadata: { before: previousRow, after: updatedRow },
+        metadata: { before: previousRow, after: updated },
         ip: req.ip
       });
     } catch (e) {
