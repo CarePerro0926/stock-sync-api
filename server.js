@@ -290,15 +290,15 @@ app.get('/api/productos', async (req, res) => {
   }
 });
 
-/**
- * GET /api/usuarios
- * - Detecta admin por x-admin-token o JWT con role administrador.
- * - Si es admin, incluye inactivos por defecto (o si se pasa ?include_inactivos=true).
- * - Devuelve { success: true, data: [...] } y añade status en cada usuario.
- */
+// GET /api/usuarios - handler definitivo (reemplazar el existente)
 app.get('/api/usuarios', async (req, res) => {
   try {
-    // Detectar admin
+    // Verificar cliente supabase
+    if (!supabaseAdmin) {
+      return res.status(500).json({ success: false, message: 'supabaseAdmin no inicializado. Revisa SUPABASE_URL y SUPABASE_SERVICE_KEY' });
+    }
+
+    // Detectar admin por x-admin-token o JWT con role administrador
     let isAdmin = false;
     if (isAdminRequest(req)) {
       isAdmin = true;
@@ -306,43 +306,44 @@ app.get('/api/usuarios', async (req, res) => {
       const auth = req.headers.authorization || '';
       const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
       if (auth.startsWith('Bearer ') && secret) {
-        const token = auth.split(' ')[1];
         try {
+          const token = auth.split(' ')[1];
           const payload = jwt.verify(token, secret);
-          if (payload && payload.role && String(payload.role).toLowerCase() === 'administrador') {
-            isAdmin = true;
-          }
+          if (payload && payload.role && String(payload.role).toLowerCase() === 'administrador') isAdmin = true;
         } catch (e) {
-          // token inválido o expirado -> no admin
+          /* no admin */
         }
       }
     }
 
     // Decidir incluir inactivos
-    let includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
-    if (!includeInactivos && isAdmin) includeInactivos = true;
+    const qInclude = String(req.query.include_inactivos || '').toLowerCase() === 'true';
+    const includeInactivos = qInclude || isAdmin;
 
-    console.log('GET /api/usuarios - isAdmin:', isAdmin, 'includeInactivos:', includeInactivos);
-
+    // Ejecutar consulta
     let query = supabaseAdmin.from('usuarios').select('*').order('id', { ascending: true });
     if (!includeInactivos) query = query.is('deleted_at', null);
 
-    const { data, error } = await query;
+    const { data, error, status } = await query;
+
     if (error) {
-      console.warn('GET /api/usuarios - supabase error:', error.message || error);
-      return respondError(res, 500, 'Error al obtener usuarios', error);
+      // Devolver error claro para depuración en frontend
+      console.error('Supabase error GET /api/usuarios:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Error al consultar usuarios en Supabase',
+        supabase_status: status,
+        supabase_error: error
+      });
     }
 
-    const normalized = (data || []).map(u => ({
-      ...u,
-      status: u.deleted_at ? 'inactive' : 'active'
-    }));
-
+    // Normalizar y devolver
+    const normalized = (data || []).map(u => ({ ...u, status: u.deleted_at ? 'inactive' : 'active' }));
     res.setHeader('X-Users-Count', Array.isArray(normalized) ? normalized.length : 0);
     return res.status(200).json({ success: true, data: normalized });
   } catch (err) {
-    console.warn('GET /api/usuarios - exception:', String(err));
-    return respondError(res, 500, 'Error interno', String(err));
+    console.error('Exception GET /api/usuarios:', err);
+    return res.status(500).json({ success: false, message: 'Exception en servidor', error: String(err) });
   }
 });
 
