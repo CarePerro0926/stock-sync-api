@@ -301,8 +301,6 @@ app.post('/api/login', async (req, res) => {
  * GET /api/productos
  * Por defecto devuelve solo productos activos (deleted_at IS NULL).
  * Si ?include_inactivos=true se devuelven todos.
- *
- * Devuelve directamente un array (compatibilidad con frontend).
  */
 app.get('/api/productos', async (req, res) => {
   try {
@@ -321,57 +319,25 @@ app.get('/api/productos', async (req, res) => {
 
     if (error) {
       console.error('GET /api/productos - supabase error:', error.message || error);
-      return res.status(200).json([]);
+      return respondError(res, 500, 'No se pudo obtener productos', error.message || String(error));
     }
 
-    return res.status(200).json(data || []);
+    return res.status(200).json({ success: true, data: data || [] });
   } catch (err) {
     console.error('API exception GET /api/productos:', err);
-    return res.status(200).json([]);
+    return respondError(res, 500, 'Error interno', String(err));
   }
 });
 
 /**
  * GET /api/usuarios
- * - Por defecto devuelve solo usuarios activos (deleted_at IS NULL).
- * - Si la petición viene de un admin (x-admin-token o JWT con role=administrador),
- *   muestra inactivos por defecto.
- * - Si se pasa ?include_inactivos=true se respetará.
- *
- * Devuelve directamente un array para compatibilidad con el frontend.
+ * Por defecto devuelve solo usuarios activos (deleted_at IS NULL).
+ * ?include_inactivos=true para listar también inactivos.
  */
 app.get('/api/usuarios', async (req, res) => {
   try {
-    // 1) detectar admin: x-admin-token (service token) o JWT con role administrador
-    let isAdmin = false;
+    const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
 
-    // a) x-admin-token (server-to-server)
-    if (isAdminRequest(req)) {
-      isAdmin = true;
-    } else {
-      // b) intentar leer JWT sin ejecutar middleware
-      const auth = req.headers.authorization || '';
-      const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
-      if (auth.startsWith('Bearer ') && secret) {
-        const token = auth.split(' ')[1];
-        try {
-          const payload = jwt.verify(token, secret);
-          if (payload && payload.role && String(payload.role).toLowerCase() === 'administrador') {
-            isAdmin = true;
-          }
-        } catch (e) {
-          // token inválido o expirado: no marcar admin
-          isAdmin = false;
-        }
-      }
-    }
-
-    // 2) decidir si incluir inactivos
-    let includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
-    // si no se pidió explícitamente y es admin, mostrar inactivos por defecto
-    if (!includeInactivos && isAdmin) includeInactivos = true;
-
-    // 3) construir consulta
     let query = supabaseAdmin.from('usuarios').select('*').order('id', { ascending: true });
     if (!includeInactivos) query = query.is('deleted_at', null);
 
@@ -379,13 +345,13 @@ app.get('/api/usuarios', async (req, res) => {
 
     if (error) {
       console.warn('GET /api/usuarios - supabase returned error:', error.message || error);
-      return res.status(200).json([]);
+      return res.status(200).json({ success: true, data: [] });
     }
 
-    return res.status(200).json(data || []);
+    return res.status(200).json({ success: true, data: data || [] });
   } catch (err) {
     console.warn('GET /api/usuarios - exception:', String(err));
-    return res.status(200).json([]);
+    return res.status(200).json({ success: true, data: [] });
   }
 });
 
