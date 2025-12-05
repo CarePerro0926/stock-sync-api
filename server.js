@@ -12,7 +12,11 @@ const app = express();
 app.use(express.json());
 app.use(helmet());
 
-// --- CORS ---
+// -----------------------------------------------------------------------------
+// CORS
+// -----------------------------------------------------------------------------
+// Se permite origen dinámico desde FRONTEND_ORIGINS (coma-separado) o FRONTEND_ORIGIN.
+// Si no se define, se permite '*' (útil en desarrollo, no recomendado en prod).
 const rawOrigins = process.env.FRONTEND_ORIGINS || process.env.FRONTEND_ORIGIN || '';
 const allowedOrigins = rawOrigins ? rawOrigins.split(',').map(s => s.trim()).filter(Boolean) : [];
 
@@ -25,9 +29,12 @@ app.use(
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   })
 );
-// --- FIN CORS ---
 
-// --- SUPABASE CLIENT (service role key required) ---
+// -----------------------------------------------------------------------------
+// SUPABASE CLIENT (ADMIN / SERVICE ROLE)
+// -----------------------------------------------------------------------------
+// IMPORTANTE: para que el servidor pueda leer todas las filas (evitar RLS que oculte filas),
+// usa la service role key en SUPABASE_SERVICE_KEY (o SUPABASE_KEY).
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
 
@@ -37,9 +44,12 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
 }
 
 const supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-// --- FIN SUPABASE CLIENT ---
 
-// ADMIN token check (server-to-server)
+// -----------------------------------------------------------------------------
+// ADMIN API TOKEN (opcional) - para proxy o llamadas desde frontend admin
+// -----------------------------------------------------------------------------
+// Si tu frontend envía x-admin-token, el servidor lo compara con ADMIN_API_TOKEN.
+// Mantener este token en el servidor evita exponer la service role key en el cliente.
 const ADMIN_API_TOKEN = process.env.ADMIN_API_TOKEN || null;
 if (!ADMIN_API_TOKEN) {
   console.warn('ADVERTENCIA: ADMIN_API_TOKEN no está definido. Si el frontend usa x-admin-token, configúralo en el servidor.');
@@ -50,7 +60,9 @@ const isAdminRequestHeader = (req) => {
   return !!token && token === ADMIN_API_TOKEN;
 };
 
-// --- UTILIDADES ---
+// -----------------------------------------------------------------------------
+// UTILIDADES
+// -----------------------------------------------------------------------------
 const respondError = (res, status = 500, message = 'Error interno', details = null) => {
   const payload = { success: false, message };
   if (details) payload.error = details;
@@ -61,17 +73,21 @@ const isUuid = (s) => {
   if (typeof s !== 'string') return false;
   return /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/.test(s);
 };
-// --- FIN UTILIDADES ---
 
-// --- LOGGING SIMPLE ---
+// -----------------------------------------------------------------------------
+// LOGGING SIMPLE (request-level)
+// -----------------------------------------------------------------------------
 app.use((req, res, next) => {
   const hasAdminHeader = !!req.headers['x-admin-token'];
   console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl} - x-admin-token present: ${hasAdminHeader}`);
   next();
 });
-// --- FIN LOGGING ---
 
-// --- AUTH MIDDLEWARES ---
+// -----------------------------------------------------------------------------
+// AUTH MIDDLEWARES
+// - authenticateJwt: valida JWT y que el usuario no esté inhabilitado (deleted_at)
+// - authenticateJwtAdmin: reusa authenticateJwt y exige role 'administrador'
+// -----------------------------------------------------------------------------
 const authenticateJwt = async (req, res, next) => {
   try {
     const auth = req.headers.authorization || '';
@@ -83,6 +99,7 @@ const authenticateJwt = async (req, res, next) => {
     const payload = jwt.verify(token, secret);
     if (!payload || !payload.sub) return res.status(401).json({ success: false, message: 'Token inválido' });
 
+    // Verificar en DB que el usuario exista y no esté inhabilitado
     const { data, error } = await supabaseAdmin
       .from('usuarios')
       .select('id, deleted_at, role, email, username')
@@ -128,9 +145,10 @@ const authenticateJwtAdmin = async (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Token inválido' });
   }
 };
-// --- FIN AUTH MIDDLEWARES ---
 
-// --- AUDIT LOG HELPER ---
+// -----------------------------------------------------------------------------
+// AUDIT LOG HELPER (opcional, best-effort)
+// -----------------------------------------------------------------------------
 const insertAuditLog = async ({ actor_id = null, actor_username = null, action, target_table = null, target_id = null, reason = null, metadata = null, ip = null }) => {
   try {
     const payload = {
@@ -154,13 +172,24 @@ const insertAuditLog = async ({ actor_id = null, actor_username = null, action, 
     return false;
   }
 };
-// --- FIN AUDIT LOG HELPER ---
 
-// --- RUTAS ---
-
-/**
- * ADMIN PROXY (opcional)
- */
+// -----------------------------------------------------------------------------
+// RUTAS
+// -----------------------------------------------------------------------------
+//
+// Diseño de respuestas:
+// - Para endpoints de lista (productos, usuarios) devolvemos siempre un wrapper:
+//     { success: true, data: [...] }
+//   Esto evita que el frontend haga .map sobre un objeto inesperado.
+// - Para endpoints de modificación (PATCH enable/disable) devolvemos:
+//     { success: true, data: <usuario o array> }
+// - En caso de error no crítico para la UI (p. ej. supabase devuelve error en select),
+//   devolvemos arrays vacíos en las rutas de lista para evitar romper la UI.
+// - Los errores graves devuelven respondError con success:false.
+//
+// -----------------------------------------------------------------------------
+// ADMIN PROXY (opcional) - reenvía a API externa usando ADMIN_API_TOKEN
+// -----------------------------------------------------------------------------
 app.patch('/admin/usuarios/:id/:action', /* authenticateJwtAdmin, */ async (req, res) => {
   try {
     const { id, action } = req.params;
@@ -192,9 +221,12 @@ app.patch('/admin/usuarios/:id/:action', /* authenticateJwtAdmin, */ async (req,
   }
 });
 
-/**
- * POST /api/login
- */
+// -----------------------------------------------------------------------------
+// POST /api/login
+// - Acepta { email, password } o { username, password } o { user, pass }
+// - Busca en tabla 'usuarios' y si no existe intenta 'users'
+// - Verifica bcrypt y devuelve JWT si JWT_SECRET está definido
+// -----------------------------------------------------------------------------
 app.post('/api/login', async (req, res) => {
   try {
     const body = req.body || {};
@@ -232,6 +264,7 @@ app.post('/api/login', async (req, res) => {
     let usersResult = await queryUserFromTable('usuarios');
 
     if (usersResult.error) {
+      // Intentar tabla alternativa 'users' por compatibilidad con esquemas antiguos
       usersResult = await queryUserFromTable('users');
     }
 
@@ -282,10 +315,11 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-/**
- * GET /api/productos
- * Devuelve siempre { success: true, data: [...] } para consistencia
- */
+// -----------------------------------------------------------------------------
+// GET /api/productos
+// - Devuelve siempre { success: true, data: [...] } para consistencia con frontend
+// - Si include_inactivos=true incluye productos con deleted_at != null
+// -----------------------------------------------------------------------------
 app.get('/api/productos', async (req, res) => {
   try {
     const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
@@ -301,6 +335,7 @@ app.get('/api/productos', async (req, res) => {
 
     if (error) {
       console.error('GET /api/productos - supabase error:', error);
+      // Devolver wrapper consistente con array vacío para evitar romper frontend
       return res.status(200).json({ success: true, data: [] });
     }
 
@@ -311,15 +346,18 @@ app.get('/api/productos', async (req, res) => {
   }
 });
 
-/**
- * GET /api/usuarios
- * - Devuelve siempre { success: true, data: [...] }
- * - Admin ve inactivos por defecto (x-admin-token o JWT role)
- * - Mantiene usuarios desactivados visibles para gestión de estado
- */
+// -----------------------------------------------------------------------------
+// GET /api/usuarios
+// - Devuelve siempre { success: true, data: [...] }
+// - Admin ve inactivos por defecto (x-admin-token o JWT role 'administrador')
+// - Si se pasa ?include_inactivos=true también incluye inactivos
+// - Normaliza cada usuario con campo status: 'active' | 'inactive'
+// - IMPORTANTE: para que la pestaña "gestionar estado" muestre usuarios inactivos,
+//   el frontend debe solicitar la lista con x-admin-token o con JWT admin o con ?include_inactivos=true
+// -----------------------------------------------------------------------------
 app.get('/api/usuarios', async (req, res) => {
   try {
-    // detectar admin por header o JWT
+    // Detectar admin por header o JWT
     let isAdmin = false;
     if (isAdminRequestHeader(req)) {
       isAdmin = true;
@@ -337,13 +375,13 @@ app.get('/api/usuarios', async (req, res) => {
       }
     }
 
-    // decidir incluir inactivos: query param OR admin
+    // Decidir incluir inactivos: query param OR admin
     let includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
     if (!includeInactivos && isAdmin) includeInactivos = true;
 
     console.log('GET /api/usuarios - isAdmin:', isAdmin, 'includeInactivos:', includeInactivos);
 
-    // Si includeInactivos true, fetch all rows; otherwise only active rows
+    // Construir consulta: si includeInactivos true, traer todas las filas; si no, solo active
     let query = supabaseAdmin.from('usuarios').select('*').order('id', { ascending: true });
     if (!includeInactivos) query = query.is('deleted_at', null);
 
@@ -367,21 +405,19 @@ app.get('/api/usuarios', async (req, res) => {
   }
 });
 
-/**
- * PATCH /api/usuarios/:id/disable
- * Requiere authenticateJwtAdmin
- * Devuelve { success: true, data: usuario } (usuario actualizado)
- *
- * IMPORTANT: does NOT remove the row from any management lists.
- * The frontend should call GET /api/usuarios with admin credentials or include_inactivos=true
- * to see inactive users. This endpoint only sets deleted_at and returns the updated row.
- */
+// -----------------------------------------------------------------------------
+// PATCH /api/usuarios/:id/disable
+// - Requiere authenticateJwtAdmin
+// - Actualiza deleted_at (soft-delete) y devuelve el usuario actualizado en wrapper
+// - NO elimina la fila de la DB; la fila sigue existiendo y será visible si el frontend
+//   solicita incluir inactivos (x-admin-token, JWT admin o include_inactivos=true).
+// -----------------------------------------------------------------------------
 app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
   if (!isUuid(id)) return respondError(res, 400, 'ID inválido');
 
   try {
-    // Update deleted_at (soft-disable)
+    // Actualizar deleted_at
     const { data, error } = await supabaseAdmin
       .from('usuarios')
       .update({ deleted_at: new Date().toISOString() })
@@ -398,7 +434,7 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
     const updated = Array.isArray(data) ? data[0] : data;
     const result = { ...updated, status: updated.deleted_at ? 'inactive' : 'active' };
 
-    // Audit log (best-effort)
+    // Registrar audit log (no bloquear la respuesta si falla)
     try {
       await insertAuditLog({
         actor_id: req.user?.id || null,
@@ -413,7 +449,7 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
       console.warn('Audit log failed for usuario_disable:', e);
     }
 
-    // Return updated user object (wrapper)
+    // Devolver el usuario actualizado en wrapper consistente
     return res.status(200).json({ success: true, data: result });
   } catch (err) {
     console.error('PATCH disable usuario - exception:', err);
@@ -421,11 +457,11 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
   }
 });
 
-/**
- * PATCH /api/usuarios/:id/enable
- * Requiere authenticateJwtAdmin
- * Devuelve { success: true, data: usuario } (usuario actualizado)
- */
+// -----------------------------------------------------------------------------
+// PATCH /api/usuarios/:id/enable
+// - Requiere authenticateJwtAdmin
+// - Quita deleted_at (reactiva) y devuelve el usuario actualizado en wrapper
+// -----------------------------------------------------------------------------
 app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
   if (!isUuid(id)) return respondError(res, 400, 'ID inválido');
@@ -468,10 +504,11 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
   }
 });
 
-/**
- * PATCH /api/productos/:id/disable
- * Requiere x-admin-token
- */
+// -----------------------------------------------------------------------------
+// PATCH /api/productos/:id/disable  &  PATCH /api/productos/:id/enable
+// - Requieren x-admin-token (isAdminRequestHeader)
+// - Mantienen formato consistente { success: true, data: [...] }
+// -----------------------------------------------------------------------------
 app.patch('/api/productos/:id/disable', async (req, res) => {
   if (!isAdminRequestHeader(req)) {
     console.warn('PATCH disable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
@@ -499,10 +536,6 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
   }
 });
 
-/**
- * PATCH /api/productos/:id/enable
- * Requiere x-admin-token
- */
 app.patch('/api/productos/:id/enable', async (req, res) => {
   if (!isAdminRequestHeader(req)) {
     console.warn('PATCH enable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
@@ -530,10 +563,66 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
   }
 });
 
-/**
- * GET /api/mis-datos
- * Protegida por authenticateJwt
- */
+// -----------------------------------------------------------------------------
+// DELETE /api/usuarios/:id (soft delete)
+// - Requiere authenticateJwtAdmin
+// - Implementado como soft-delete (deleted_at = now)
+// -----------------------------------------------------------------------------
+app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
+  const { id } = req.params;
+  if (!isUuid(id)) return respondError(res, 400, 'ID inválido');
+
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('usuarios')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', id)
+      .is('deleted_at', null)
+      .select();
+
+    if (error) {
+      console.error('DELETE (soft) usuario error:', error);
+      return respondError(res, 500, 'No se pudo inhabilitar el usuario', error);
+    }
+
+    if (!data || data.length === 0) {
+      // Si no se actualizó, comprobar existencia
+      const { data: exists, error: errExists } = await supabaseAdmin.from('usuarios').select('id, deleted_at').eq('id', id).limit(1);
+      if (errExists) {
+        console.error('Error comprobando existencia usuario tras intento delete:', errExists);
+        return respondError(res, 500, 'Error interno', String(errExists));
+      }
+      if (!exists || exists.length === 0) return respondError(res, 404, 'Usuario no encontrado');
+      return res.status(200).json({ success: true, message: 'Usuario ya inhabilitado' });
+    }
+
+    const updated = Array.isArray(data) && data.length ? data[0] : data;
+
+    try {
+      await insertAuditLog({
+        actor_id: req.user?.id || null,
+        actor_username: req.user?.username || null,
+        action: 'usuario_disable',
+        target_table: 'usuarios',
+        target_id: id,
+        metadata: { after: updated },
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for usuario_disable (DELETE):', e);
+    }
+
+    return res.status(200).json({ success: true, message: 'Usuario inhabilitado' });
+  } catch (err) {
+    console.error('API exception DELETE usuario (soft):', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+// -----------------------------------------------------------------------------
+// GET /api/mis-datos
+// - Protegida por authenticateJwt
+// -----------------------------------------------------------------------------
 app.get('/api/mis-datos', authenticateJwt, async (req, res) => {
   try {
     const userId = req.user.id;
@@ -558,22 +647,28 @@ app.get('/api/mis-datos', authenticateJwt, async (req, res) => {
   }
 });
 
-// Health check
+// -----------------------------------------------------------------------------
+// Health check & root
+// -----------------------------------------------------------------------------
 app.get('/api/health', (req, res) => res.status(200).json({ ok: true }));
 
-// Root
 app.get('/', (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   res.status(200).send('Bienvenido a la API de Stock Sync');
 });
 
-// Error handler
+// -----------------------------------------------------------------------------
+// Error handler centralizado (último middleware)
+// -----------------------------------------------------------------------------
 app.use((err, req, res, next) => {
   console.error('Unhandled error:', err);
   if (res.headersSent) return next(err);
   return respondError(res, 500, 'Error interno', String(err));
 });
 
+// -----------------------------------------------------------------------------
+// START SERVER
+// -----------------------------------------------------------------------------
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`API server listening on port ${PORT}`);
