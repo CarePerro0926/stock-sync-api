@@ -1,11 +1,11 @@
 // api/server.js
 import 'dotenv/config';
 import express from 'express';
-import cors from 'cors'; // Asegúrate de tener 'cors' instalado: npm install cors
+import cors from 'cors';
 import helmet from 'helmet';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
-import axios from 'axios'; // Importar axios para el proxy
+import axios from 'axios';
 import { createClient } from '@supabase/supabase-js';
 
 const app = express();
@@ -13,18 +13,15 @@ app.use(express.json());
 app.use(helmet());
 
 // --- CONFIGURACIÓN DE CORS USANDO EL MIDDLEWARE cors ---
-// Definir origins permitidos
 const rawOrigins = process.env.FRONTEND_ORIGINS || process.env.FRONTEND_ORIGIN || '';
 const allowedOrigins = rawOrigins ? rawOrigins.split(',').map(s => s.trim()).filter(Boolean) : [];
 
 app.use(
   cors({
-    // Si allowedOrigins está vacío, origin: '*' permitirá todos los orígenes
-    // Si tiene valores, solo permitirá esos orígenes específicos
     origin: allowedOrigins.length > 0 ? allowedOrigins : '*',
     allowedHeaders: ['Content-Type', 'x-admin-token', 'authorization'],
     exposedHeaders: ['Content-Type', 'x-admin-token'],
-    credentials: true, // Importante si envías cookies o tokens
+    credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   })
 );
@@ -55,28 +52,78 @@ const isAdminRequest = (req) => {
   return !!token && token === process.env.ADMIN_API_TOKEN;
 };
 
-// --- NUEVO: Middleware para validar JWT y rol admin ---
-// CAMBIADO: Se espera el rol 'administrador' en lugar de 'admin'
-const authenticateJwtAdmin = (req, res, next) => {
+// --- MIDDLEWARES DE AUTENTICACIÓN Y AUTORIZACIÓN ---
+// Middleware que valida JWT y además comprueba que el usuario no esté inhabilitado.
+// Uso general para rutas que requieren autenticación (no necesariamente admin).
+const authenticateJwt = async (req, res, next) => {
   try {
     const auth = req.headers.authorization || '';
     if (!auth.startsWith('Bearer ')) return res.status(401).json({ success: false, message: 'No autorizado' });
     const token = auth.split(' ')[1];
     const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
     if (!secret) return res.status(500).json({ success: false, message: 'JWT secret no configurado en servidor' });
+
     const payload = jwt.verify(token, secret);
-    // Ajusta según tu payload real (role, isAdmin, etc.)
-    if (!payload || (payload.role && payload.role !== 'administrador')) { // <-- CAMBIADO A 'administrador'
-      return res.status(403).json({ success: false, message: 'Forbidden' });
+    if (!payload || !payload.sub) {
+      return res.status(401).json({ success: false, message: 'Token inválido' });
     }
-    req.user = payload;
+
+    // Verificar en la base de datos que el usuario exista y no esté inhabilitado
+    const { data, error } = await supabaseAdmin
+      .from('usuarios')
+      .select('id, deleted_at, role, email, username')
+      .eq('id', payload.sub)
+      .limit(1);
+
+    if (error) {
+      console.error('authenticateJwt supabase error:', error);
+      return res.status(500).json({ success: false, message: 'Error al validar usuario' });
+    }
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
+    }
+
+    const dbUser = data[0];
+    if (dbUser.deleted_at) {
+      return res.status(403).json({ success: false, message: 'Usuario inhabilitado' });
+    }
+
+    // Attach user info to request
+    req.user = {
+      id: dbUser.id,
+      role: dbUser.role || payload.role || 'cliente',
+      email: dbUser.email || payload.email,
+      username: dbUser.username || payload.username,
+      tokenPayload: payload
+    };
+
     return next();
   } catch (err) {
-    console.error('authenticateJwtAdmin error:', err?.message || err);
+    console.error('authenticateJwt error:', err?.message || err);
     return res.status(401).json({ success: false, message: 'Token inválido' });
   }
 };
-// --- FIN NUEVO ---
+
+// Middleware que valida JWT y además exige rol administrador.
+// Reusa authenticateJwt internamente to ensure deleted_at check.
+const authenticateJwtAdmin = async (req, res, next) => {
+  try {
+    // Primero validar token y estado del usuario
+    await authenticateJwt(req, res, async () => {
+      // Ahora verificar rol
+      const role = req.user && req.user.role ? req.user.role : (req.user && req.user.tokenPayload && req.user.tokenPayload.role) || null;
+      if (!role || role !== 'administrador') {
+        return res.status(403).json({ success: false, message: 'Forbidden' });
+      }
+      return next();
+    });
+  } catch (err) {
+    console.error('authenticateJwtAdmin wrapper error:', err?.message || err);
+    return res.status(401).json({ success: false, message: 'Token inválido' });
+  }
+};
+// --- FIN MIDDLEWARES ---
 
 const respondError = (res, status = 500, message = 'Error interno', details = null) => {
   const payload = { success: false, message };
@@ -102,14 +149,12 @@ app.use((req, res, next) => {
  * - Alternativamente, puedes permitir la llamada si el frontend incluye el header x-admin-token correcto,
  *   pero eso expone el token en el cliente (no recomendado).
  */
-// CORREGIDO: Ruta sin sintaxis incompatible de path-to-regexp
 app.patch('/admin/usuarios/:id/:action', /* authenticateJwtAdmin, */ async (req, res) => {
   try {
     const { id, action } = req.params;
 
-    // Validar manualmente la acción
     if (action !== 'enable' && action !== 'disable') {
-        return respondError(res, 400, 'Acción inválida. Solo se permite "enable" o "disable".');
+      return respondError(res, 400, 'Acción inválida. Solo se permite "enable" o "disable".');
     }
 
     console.log('ADMIN PROXY called', { id, action, from: req.ip });
@@ -119,15 +164,7 @@ app.patch('/admin/usuarios/:id/:action', /* authenticateJwtAdmin, */ async (req,
       return respondError(res, 500, 'ADMIN token not configured on server');
     }
 
-    // CAMBIADO: API_INTERNAL_BASE debe apuntar a la API EXTERNA real donde se almacenan los usuarios
-    // y donde se deben aplicar las rutas PATCH /api/usuarios/:id/(disable|enable).
-    // Ejemplo: const API_INTERNAL_BASE = 'https://mi-api-externa-real.com';
-    // Reemplaza esta URL con la correcta de la API destino.
-    // Si no tienes una API externa distinta, debes implementar la lógica de usuarios directamente aquí usando Supabase.
-    // const API_INTERNAL_BASE = process.env.API_INTERNAL_BASE || 'https://stock-sync-api.onrender.com'; // <-- ESTO CAUSA EL ERROR ANTERIOR SI SE USA EL PROXY ASÍ
-    // CORRECCIÓN: Define una variable de entorno para la API real de usuarios o implementa la lógica localmente.
-    // Por ejemplo, si tienes una variable de entorno API_USUARIOS_BASE:
-    const API_USUARIOS_BASE = process.env.API_USUARIOS_BASE || process.env.API_INTERNAL_BASE || 'https://la-api-externa-que-tiene-los-usuarios.com'; // <-- CAMBIA ESTA URL
+    const API_USUARIOS_BASE = process.env.API_USUARIOS_BASE || process.env.API_INTERNAL_BASE || 'https://la-api-externa-que-tiene-los-usuarios.com';
     const url = `${API_USUARIOS_BASE}/api/usuarios/${id}/${action}`;
 
     const resp = await axios.patch(url, null, {
@@ -138,7 +175,6 @@ app.patch('/admin/usuarios/:id/:action', /* authenticateJwtAdmin, */ async (req,
       validateStatus: () => true
     });
 
-    // Reenviamos status y body tal cual lo devolvió la API remota
     return res.status(resp.status).send(resp.data);
   } catch (err) {
     console.error('Proxy admin error:', err?.response?.data || err.message || err);
@@ -183,7 +219,7 @@ app.post('/api/login', async (req, res) => {
       try {
         let query = supabaseAdmin
           .from(tableName)
-          .select('id, email, username, pass, nombres, apellidos, role')
+          .select('id, email, username, pass, nombres, apellidos, role, deleted_at')
           .limit(1);
 
         if (email) {
@@ -196,7 +232,6 @@ app.post('/api/login', async (req, res) => {
         const { data, error } = await query;
         return { data, error };
       } catch (err) {
-        // CORREGIDO: Se añadió la clave 'data' para el valor null
         return { data: null, error: err };
       }
     };
@@ -221,6 +256,11 @@ app.post('/api/login', async (req, res) => {
       return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
     }
 
+    // Si la columna deleted_at existe y tiene valor, el usuario está inhabilitado
+    if (user.deleted_at) {
+      return res.status(403).json({ success: false, message: 'Usuario inhabilitado' });
+    }
+
     const storedHash = user.pass || null;
     if (!storedHash) {
       console.warn('POST /api/login - usuario sin columna "pass" en DB, user id:', user.id);
@@ -237,7 +277,6 @@ app.post('/api/login', async (req, res) => {
       console.warn('JWT_SECRET no definido; se devolverá token temporal (no recomendado en producción).');
     }
 
-    // CAMBIADO: El rol se incluye directamente desde la base de datos
     const tokenPayload = { sub: user.id, email: user.email, role: user.role || 'cliente' };
     const token = jwtSecret ? jwt.sign(tokenPayload, jwtSecret, { expiresIn: '8h' }) : 'token-temporal';
 
@@ -248,7 +287,7 @@ app.post('/api/login', async (req, res) => {
         id: user.id,
         email: user.email,
         username: user.username || null,
-        role: user.role || 'cliente', // <-- Se devuelve el rol tal cual está en la DB
+        role: user.role || 'cliente',
         nombre: user.nombres || null,
         apellidos: user.apellidos || null,
       },
@@ -298,7 +337,7 @@ app.get('/api/usuarios', async (req, res) => {
   }
 });
 
-// PATCH disable (requiere header x-admin-token)
+// PATCH disable producto (requiere header x-admin-token)
 app.patch('/api/productos/:id/disable', async (req, res) => {
   if (!isAdminRequest(req)) {
     console.warn('PATCH disable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
@@ -326,7 +365,7 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
   }
 });
 
-// PATCH enable (requiere header x-admin-token)
+// PATCH enable producto (requiere header x-admin-token)
 app.patch('/api/productos/:id/enable', async (req, res) => {
   if (!isAdminRequest(req)) {
     console.warn('PATCH enable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
@@ -354,21 +393,15 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
   }
 });
 
-// --- NUEVAS RUTAS: PATCH para inhabilitar/reactivar usuarios usando Supabase ---
-// Asumiendo que los usuarios están en la tabla 'usuarios' y el campo de borrado lógico es 'deleted_at'
-// Asegúrate de que la tabla 'usuarios' exista y tenga el campo 'deleted_at'.
-// También asegúrate de que el middleware authenticateJwtAdmin esté aplicado si es necesario.
-
+// --- RUTAS: PATCH para inhabilitar/reactivar usuarios usando Supabase ---
 // PATCH disable usuario (requiere autenticación JWT de admin)
 app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
   try {
-    // Asumiendo que la tabla de usuarios es 'usuarios' y el campo de borrado lógico es 'deleted_at'
-    // Ajusta 'usuarios' y 'deleted_at' según tu base de datos real
     const { data, error } = await supabaseAdmin
-      .from('usuarios') // <-- Ajusta el nombre de la tabla si es diferente
-      .update({ deleted_at: new Date().toISOString() }) // <-- Ajusta el campo si es diferente
-      .eq('id', id) // Asumiendo que el id en la URL coincide con el id en la tabla
+      .from('usuarios')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', id)
       .select();
 
     if (error) {
@@ -376,13 +409,12 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
       return respondError(res, 500, 'No se pudo inhabilitar el usuario', error.message || String(error));
     }
 
-    // Si la actualización fue exitosa pero no devolvió datos (por ejemplo, si la fila no existía)
     if (!data || data.length === 0) {
-        return respondError(res, 404, 'Usuario no encontrado');
+      return respondError(res, 404, 'Usuario no encontrado');
     }
 
     const result = Array.isArray(data) ? data : [data];
-    return res.status(200).json({ success: true, data: result[0] }); // Devolver el usuario actualizado
+    return res.status(200).json({ success: true, data: result[0] });
   } catch (err) {
     console.error('API exception PATCH disable usuario:', err);
     return respondError(res, 500, 'Error interno', String(err));
@@ -393,12 +425,10 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
 app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
   try {
-    // Asumiendo que la tabla de usuarios es 'usuarios' y el campo de borrado lógico es 'deleted_at'
-    // Ajusta 'usuarios' y 'deleted_at' según tu base de datos real
     const { data, error } = await supabaseAdmin
-      .from('usuarios') // <-- Ajusta el nombre de la tabla si es diferente
-      .update({ deleted_at: null }) // <-- Ajusta el campo si es diferente
-      .eq('id', id) // Asumiendo que el id en la URL coincide con el id en la tabla
+      .from('usuarios')
+      .update({ deleted_at: null })
+      .eq('id', id)
       .select();
 
     if (error) {
@@ -406,15 +436,43 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
       return respondError(res, 500, 'No se pudo habilitar el usuario', error.message || String(error));
     }
 
-    // Si la actualización fue exitosa pero no devolvió datos (por ejemplo, si la fila no existía)
     if (!data || data.length === 0) {
-        return respondError(res, 404, 'Usuario no encontrado');
+      return respondError(res, 404, 'Usuario no encontrado');
     }
 
     const result = Array.isArray(data) ? data : [data];
-    return res.status(200).json({ success: true, data: result[0] }); // Devolver el usuario actualizado
+    return res.status(200).json({ success: true, data: result[0] });
   } catch (err) {
     console.error('API exception PATCH enable usuario:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+// Ejemplo de ruta protegida para usuarios autenticados (no solo admin)
+// Usa authenticateJwt para que cualquier endpoint protegido valide deleted_at
+app.get('/api/mis-datos', authenticateJwt, async (req, res) => {
+  try {
+    // req.user ya contiene id y otros datos
+    const userId = req.user.id;
+    const { data, error } = await supabaseAdmin
+      .from('usuarios')
+      .select('id, email, username, nombres, apellidos, role, deleted_at')
+      .eq('id', userId)
+      .limit(1);
+
+    if (error) {
+      console.error('GET /api/mis-datos supabase error:', error);
+      return respondError(res, 500, 'Error al obtener datos de usuario', error.message || String(error));
+    }
+
+    if (!data || data.length === 0) {
+      return respondError(res, 404, 'Usuario no encontrado');
+    }
+
+    const user = data[0];
+    return res.status(200).json({ success: true, data: user });
+  } catch (err) {
+    console.error('GET /api/mis-datos error:', err);
     return respondError(res, 500, 'Error interno', String(err));
   }
 });
@@ -435,7 +493,7 @@ app.use((err, req, res, next) => {
   return respondError(res, 500, 'Error interno', String(err));
 });
 
-const PORT = process.env.PORT || 10000; // Render usa el puerto 10000 por defecto si no se especifica
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`API server listening on port ${PORT}`);
 });
