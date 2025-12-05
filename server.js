@@ -190,7 +190,7 @@ app.patch('/admin/usuarios/:id/:action', authenticateJwtAdmin, async (req, res) 
       return respondError(res, 500, 'ADMIN token not configured on server');
     }
 
-    const API_USUARIOS_BASE = process.env.API_USUARIOS_BASE || process.env.API_INTERNAL_BASE || 'https://la-api-externa-que-tiene-los-usuarios.com';
+    const API_USUARIOS_BASE = process.env.API_USUARIOS_BASE || process.env.API_INTERNAL_BASE || 'https://la-api-externa-que-tiene-los-usuarios.com  ';
     const url = `${API_USUARIOS_BASE}/api/usuarios/${id}/${action}`;
 
     const resp = await axios.patch(url, null, {
@@ -333,47 +333,23 @@ app.get('/api/productos', async (req, res) => {
 
 /**
  * GET /api/usuarios
- * - Por defecto devuelve solo usuarios activos (deleted_at IS NULL).
- * - Si la petición viene de un admin (x-admin-token o JWT con role=administrador),
- *   muestra inactivos por defecto.
- * - Si se pasa ?include_inactivos=true se respetará.
+ * - AHORA devuelve TODOS los usuarios por defecto (activos e inactivos).
+ * - Si se pasa ?include_inactivos=false se filtran (opcional).
  *
  * Devuelve directamente un array para compatibilidad con el frontend.
  */
 app.get('/api/usuarios', async (req, res) => {
   try {
-    // 1) detectar admin: x-admin-token (service token) o JWT con role administrador
-    let isAdmin = false;
+    // Decidir si incluir inactivos basado en query param
+    // Por defecto, ahora incluye inactivos (include_inactivos=true implícito)
+    const includeInactivos = String(req.query.include_inactivos || 'true').toLowerCase() === 'true';
 
-    // a) x-admin-token (server-to-server)
-    if (isAdminRequest(req)) {
-      isAdmin = true;
-    } else {
-      // b) intentar leer JWT sin ejecutar middleware
-      const auth = req.headers.authorization || '';
-      const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
-      if (auth.startsWith('Bearer ') && secret) {
-        const token = auth.split(' ')[1];
-        try {
-          const payload = jwt.verify(token, secret);
-          if (payload && payload.role && String(payload.role).toLowerCase() === 'administrador') {
-            isAdmin = true;
-          }
-        } catch (e) {
-          // token inválido o expirado: no marcar admin
-          isAdmin = false;
-        }
-      }
-    }
-
-    // 2) decidir si incluir inactivos
-    let includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
-    // si no se pidió explícitamente y es admin, mostrar inactivos por defecto
-    if (!includeInactivos && isAdmin) includeInactivos = true;
-
-    // 3) construir consulta
+    // Construir consulta
     let query = supabaseAdmin.from('usuarios').select('*').order('id', { ascending: true });
-    if (!includeInactivos) query = query.is('deleted_at', null);
+    if (!includeInactivos) {
+      // Filtrar solo activos si explícitamente se pide
+      query = query.is('deleted_at', null);
+    }
 
     const { data, error } = await query;
 
@@ -388,6 +364,7 @@ app.get('/api/usuarios', async (req, res) => {
     return res.status(200).json([]);
   }
 });
+
 
 /**
  * PATCH /api/productos/:id/disable
