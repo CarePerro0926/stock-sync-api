@@ -164,7 +164,7 @@ const insertAuditLog = async ({ actor_id = null, actor_username = null, action, 
     }
     return true;
   } catch (err) {
-    console.warn('insertAuditLog exception:', err);
+    console.warn('insertAudit log exception:', err);
     return false;
   }
 };
@@ -172,39 +172,98 @@ const insertAuditLog = async ({ actor_id = null, actor_username = null, action, 
 // --- RUTAS ---
 
 /**
- * ADMIN PROXY
- * Protegido por authenticateJwtAdmin para evitar exponer ADMIN_API_TOKEN al cliente.
+ * POST /api/registro
+ * Registra un nuevo usuario.
+ * Valida el correo según el rol.
  */
-app.patch('/admin/usuarios/:id/:action', authenticateJwtAdmin, async (req, res) => {
+app.post('/api/registro', async (req, res) => {
   try {
-    const { id, action } = req.params;
+    const body = req.body || {};
+    // Extraer todos los campos necesarios
+    const { nombres, apellidos, cedula, fecha, telefono, email, user: username, pass: password, role } = body;
 
-    if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
-
-    if (action !== 'enable' && action !== 'disable') {
-      return respondError(res, 400, 'Acción inválida. Solo se permite "enable" o "disable".');
+    // Validaciones básicas
+    if (!nombres || !apellidos || !cedula || !fecha || !telefono || !email || !username || !password || !role) {
+      return respondError(res, 400, 'Faltan campos obligatorios');
     }
 
-    if (!process.env.ADMIN_API_TOKEN) {
-      console.warn('ADMIN proxy rejected: ADMIN_API_TOKEN not configured on server');
-      return respondError(res, 500, 'ADMIN token not configured on server');
+    // Validar rol
+    if (!['cliente', 'administrador'].includes(role)) {
+      return respondError(res, 400, 'Rol inválido. Debe ser "cliente" o "administrador".');
     }
 
-    const API_USUARIOS_BASE = process.env.API_USUARIOS_BASE || process.env.API_INTERNAL_BASE || 'https://la-api-externa-que-tiene-los-usuarios.com';
-    const url = `${API_USUARIOS_BASE}/api/usuarios/${id}/${action}`;
+    // Validar correo según rol
+    const isAdminRole = role === 'administrador';
+    const isClientRole = role === 'cliente';
+    const isStockSyncEmail = email.endsWith('@stocksync.com');
+    const isNotStockSyncEmail = !isStockSyncEmail;
 
-    const resp = await axios.patch(url, null, {
-      headers: {
-        'Content-Type': 'application/json',
-        'x-admin-token': process.env.ADMIN_API_TOKEN
-      },
-      validateStatus: () => true
+    if (isAdminRole && isNotStockSyncEmail) {
+      return respondError(res, 400, 'Los administradores deben usar correos @stocksync.com');
+    }
+    if (isClientRole && isStockSyncEmail) {
+      return respondError(res, 400, 'Los clientes no pueden usar correos @stocksync.com');
+    }
+
+    // Encriptar contraseña
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Datos para insertar
+    const userData = {
+      nombres,
+      apellidos,
+      cedula,
+      fecha_nacimiento: fecha, // Asegúrate del nombre de la columna en Supabase
+      telefono,
+      email,
+      username, // Usar 'username' si es el campo en Supabase
+      pass: hashedPassword, // Usar 'pass' si es el campo en Supabase
+      role,
+      // deleted_at: null // Se asume NULL por defecto si no se envía
+    };
+
+    // Intentar insertar en Supabase
+    const { data, error } = await supabaseAdmin
+      .from('usuarios') // Asegúrate del nombre de la tabla
+      .insert([userData])
+      .select('id, email, username, nombres, apellidos, role') // Selecciona solo lo necesario
+      .single(); // Espera un solo registro
+
+    if (error) {
+      console.error('Error al registrar usuario en Supabase:', error);
+      // Puede ser un conflicto (correo o username duplicado)
+      if (error.code === '23505') { // Código de error común para duplicados en Supabase/PostgreSQL
+        return respondError(res, 400, 'El correo o nombre de usuario ya están registrados');
+      }
+      return respondError(res, 500, 'Error al registrar usuario', error.message || String(error));
+    }
+
+    // Opcional: Generar un token inmediatamente después del registro
+    // const jwtSecret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
+    // const tokenPayload = { sub: data.id, email: data.email, role: data.role };
+    // const token = jwtSecret ? jwt.sign(tokenPayload, jwtSecret, { expiresIn: '8h' }) : 'token-temporal';
+
+    // return res.status(201).json({
+    //   success: true,
+    //   message: 'Usuario registrado con éxito',
+    //   token, // Incluir token si se desea auto-login
+    //   user: data
+    // });
+
+    // O simplemente confirmar el registro
+    return res.status(201).json({
+      success: true,
+      message: 'Usuario registrado con éxito',
+      data: {
+        id: data.id,
+        email: data.email,
+        username: data.username
+      }
     });
 
-    return res.status(resp.status).send(resp.data);
   } catch (err) {
-    console.error('Proxy admin error:', err?.response?.data || err.message || err);
-    return respondError(res, 500, 'Error interno en proxy', err?.response?.data || err?.message || String(err));
+    console.error('Error interno en POST /api/registro:', err);
+    return respondError(res, 500, 'Error interno en el servidor', String(err));
   }
 });
 
@@ -420,6 +479,7 @@ app.post('/api/productos', authenticateJwtAdmin, async (req, res) => {
  * GET /api/productos/:id
  * Consulta un producto por ID (activo o inactivo).
  * Requiere authenticateJwt (logueado).
+ * Acepta tanto 'id' como 'product_id'.
  */
 app.get('/api/productos/:id', authenticateJwt, async (req, res) => {
   try {
@@ -468,6 +528,7 @@ app.get('/api/productos/:id', authenticateJwt, async (req, res) => {
  * PUT /api/productos/:id
  * Modifica completamente un producto por ID.
  * Requiere authenticateJwtAdmin (logueado como admin).
+ * Acepta tanto 'id' como 'product_id'.
  */
 app.put('/api/productos/:id', authenticateJwtAdmin, async (req, res) => {
   try {
@@ -533,7 +594,9 @@ app.put('/api/productos/:id', authenticateJwtAdmin, async (req, res) => {
 
 /**
  * PATCH /api/productos/:id/disable
+ * Inhabilita un producto (soft delete) por ID.
  * Requiere authenticateJwtAdmin (logueado como admin).
+ * Acepta tanto 'id' como 'product_id'.
  */
 app.patch('/api/productos/:id/disable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
@@ -586,7 +649,9 @@ app.patch('/api/productos/:id/disable', authenticateJwtAdmin, async (req, res) =
 
 /**
  * PATCH /api/productos/:id/enable
+ * Habilita un producto (revertir soft delete) por ID.
  * Requiere authenticateJwtAdmin (logueado como admin).
+ * Acepta tanto 'id' como 'product_id'.
  */
 app.patch('/api/productos/:id/enable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
@@ -638,8 +703,192 @@ app.patch('/api/productos/:id/enable', authenticateJwtAdmin, async (req, res) =>
 });
 
 /**
+ * GET /api/usuarios/:id
+ * Consulta un usuario por ID (activo o inactivo).
+ * Requiere authenticateJwt (logueado).
+ */
+app.get('/api/usuarios/:id', authenticateJwt, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isUuid(id)) return respondError(res, 400, 'ID inválido');
+
+    const { data, error } = await supabaseAdmin
+      .from('usuarios')
+      .select('*')
+      .eq('id', id)
+      .limit(1);
+
+    if (error) {
+      console.error('GET /api/usuarios/:id - supabase error:', error);
+      return respondError(res, 500, 'Error al consultar usuario', error.message || String(error));
+    }
+
+    if (!data || data.length === 0) {
+      return respondError(res, 404, 'Usuario no encontrado');
+    }
+
+    const usuario = data[0];
+
+    // Registrar acción en auditoría (opcional)
+    try {
+      await insertAuditLog({
+        actor_id: req.user.id,
+        actor_username: req.user.username,
+        action: 'usuario_read',
+        target_table: 'usuarios',
+        target_id: usuario.id,
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for usuario_read:', e);
+    }
+
+    return res.status(200).json(usuario);
+  } catch (err) {
+    console.error('API exception GET /api/usuarios/:id:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+/**
+ * PUT /api/usuarios/:id
+ * Modifica completamente un usuario por ID.
+ * Requiere authenticateJwtAdmin (logueado como admin).
+ */
+app.put('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isUuid(id)) return respondError(res, 400, 'ID inválido');
+
+    const actor = req.user && req.user.id ? req.user.id : null;
+    const actor_username = req.user && req.user.username ? req.user.username : null;
+
+    // Obtener estado anterior para auditoría
+    const { data: prevData, error: prevError } = await supabaseAdmin
+      .from('usuarios')
+      .select('*')
+      .eq('id', id)
+      .limit(1);
+
+    if (prevError) {
+      console.error('PUT /api/usuarios/:id - supabase error fetching previous state:', prevError);
+      return respondError(res, 500, 'Error al consultar usuario previo', prevError.message || String(prevError));
+    }
+
+    if (!prevData || prevData.length === 0) {
+      return respondError(res, 404, 'Usuario no encontrado');
+    }
+
+    const previousRow = prevData[0];
+    const payload = req.body || {};
+
+    const { data, error } = await supabaseAdmin
+      .from('usuarios')
+      .update(payload)
+      .eq('id', id)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('PUT /api/usuarios/:id - supabase error updating:', error);
+      return respondError(res, 500, 'No se pudo actualizar el usuario', error.message || String(error));
+    }
+
+    // Registrar acción en auditoría
+    try {
+      await insertAuditLog({
+        actor_id: actor,
+        actor_username,
+        action: 'usuario_update',
+        target_table: 'usuarios',
+        target_id: id,
+        metadata: { before: previousRow, after: data },
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for usuario_update:', e);
+    }
+
+    console.log(`Usuario ${id} actualizado por ${actor_username}`);
+    return res.status(200).json({ success: true, data });
+  } catch (err) {
+    console.error('API exception PUT /api/usuarios/:id:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+/**
+ * DELETE /api/usuarios/:id
+ * Inhabilita un usuario (soft delete) por ID.
+ * Requiere authenticateJwtAdmin (logueado como admin).
+ */
+app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
+  const { id } = req.params;
+  if (!isUuid(id)) return respondError(res, 400, 'ID inválido');
+
+  try {
+    const actor = req.user && req.user.id ? req.user.id : null;
+    const actor_username = req.user && req.user.username ? req.user.username : null;
+
+    const { data: prevData } = await supabaseAdmin.from('usuarios').select('*').eq('id', id).limit(1);
+    const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
+
+    // Solo marcar deleted_at si aún es NULL
+    const { data, error } = await supabaseAdmin
+      .from('usuarios')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', id)
+      .is('deleted_at', null) // Solo si no está inhabilitado
+      .select();
+
+    if (error) {
+      console.error('DELETE (soft) usuario error:', error);
+      return respondError(res, 500, 'No se pudo inhabilitar el usuario', error.message || String(error));
+    }
+
+    if (!data || data.length === 0) {
+      const { data: exists, error: errExists } = await supabaseAdmin.from('usuarios').select('id, deleted_at').eq('id', id).limit(1);
+      if (errExists) {
+        console.error('Error comprobando existencia usuario tras intento delete:', errExists);
+        return respondError(res, 500, 'Error interno', String(errExists));
+      }
+      if (!exists || exists.length === 0) {
+        return respondError(res, 404, 'Usuario no encontrado');
+      }
+      // Si llega aquí, es porque ya estaba inhabilitado
+      return res.status(200).json({ success: true, message: 'Usuario ya inhabilitado' });
+    }
+
+    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
+
+    try {
+      await insertAuditLog({
+        actor_id: actor,
+        actor_username,
+        action: 'usuario_disable', // Cambiado de 'usuario_delete' a 'usuario_disable'
+        target_table: 'usuarios',
+        target_id: id,
+        reason: req.body?.reason || null,
+        metadata: { before: previousRow, after: updatedRow },
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for usuario_disable (DELETE):', e);
+    }
+
+    console.log(`Usuario ${id} inhabilitado (DELETE soft) por actor ${actor}`);
+    return res.status(200).json({ success: true, message: 'Usuario inhabilitado' });
+  } catch (err) {
+    console.error('API exception DELETE usuario (soft):', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+/**
  * PATCH /api/usuarios/:id/disable
- * Requiere authenticateJwtAdmin (valida token y rol administrador).
+ * Inhabilita un usuario (soft delete) por ID.
+ * Requiere authenticateJwtAdmin (logueado como admin).
+ * (Alternativa a DELETE, si se prefiere usar PATCH)
  */
 app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
@@ -681,7 +930,7 @@ app.patch('/api/usuarios/:id/disable', authenticateJwtAdmin, async (req, res) =>
         ip: req.ip
       });
     } catch (e) {
-      console.warn('Audit log failed for usuario_disable:', e);
+      console.warn('Audit log failed for usuario_disable (PATCH):', e);
     }
 
     console.log(`Usuario ${id} inhabilitado por actor ${actor}`);
@@ -742,72 +991,6 @@ app.patch('/api/usuarios/:id/enable', authenticateJwtAdmin, async (req, res) => 
     return res.status(200).json({ success: true, data: updatedRow });
   } catch (err) {
     console.error('API exception PATCH enable usuario:', err);
-    return respondError(res, 500, 'Error interno', String(err));
-  }
-});
-
-/**
- * DELETE /api/usuarios/:id
- * Implementación de soft delete para compatibilidad con clientes que usan DELETE.
- * Requiere authenticateJwtAdmin.
- */
-app.delete('/api/usuarios/:id', authenticateJwtAdmin, async (req, res) => {
-  const { id } = req.params;
-  if (!isUuid(id)) return respondError(res, 400, 'ID inválido');
-
-  try {
-    const actor = req.user && req.user.id ? req.user.id : null;
-    const actor_username = req.user && req.user.username ? req.user.username : null;
-
-    const { data: prevData } = await supabaseAdmin.from('usuarios').select('*').eq('id', id).limit(1);
-    const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
-
-    // Solo marcar deleted_at si aún es NULL
-    const { data, error } = await supabaseAdmin
-      .from('usuarios')
-      .update({ deleted_at: new Date().toISOString() })
-      .eq('id', id)
-      .is('deleted_at', null)
-      .select();
-
-    if (error) {
-      console.error('DELETE (soft) usuario error:', error);
-      return respondError(res, 500, 'No se pudo inhabilitar el usuario', error.message || String(error));
-    }
-
-    if (!data || data.length === 0) {
-      const { data: exists, error: errExists } = await supabaseAdmin.from('usuarios').select('id, deleted_at').eq('id', id).limit(1);
-      if (errExists) {
-        console.error('Error comprobando existencia usuario tras intento delete:', errExists);
-        return respondError(res, 500, 'Error interno', String(errExists));
-      }
-      if (!exists || exists.length === 0) {
-        return respondError(res, 404, 'Usuario no encontrado');
-      }
-      return res.status(200).json({ success: true, message: 'Usuario ya inhabilitado' });
-    }
-
-    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
-
-    try {
-      await insertAuditLog({
-        actor_id: actor,
-        actor_username,
-        action: 'usuario_disable',
-        target_table: 'usuarios',
-        target_id: id,
-        reason: req.body?.reason || null,
-        metadata: { before: previousRow, after: updatedRow },
-        ip: req.ip
-      });
-    } catch (e) {
-      console.warn('Audit log failed for usuario_disable (DELETE):', e);
-    }
-
-    console.log(`Usuario ${id} inhabilitado (DELETE soft) por actor ${actor}`);
-    return res.status(200).json({ success: true, message: 'Usuario inhabilitado' });
-  } catch (err) {
-    console.error('API exception DELETE usuario (soft):', err);
     return respondError(res, 500, 'Error interno', String(err));
   }
 });
