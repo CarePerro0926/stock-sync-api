@@ -60,10 +60,6 @@ function normalizeProductoRow(row = {}) {
 
 /**
  * OPTIONS handler para permitir preflight CORS en este router.
- * Incluye Cache-Control y Pragma en Access-Control-Allow-Headers para evitar bloqueos
- * cuando el cliente envía esos headers en la preflight.
- *
- * Nota: si ya manejas CORS globalmente (app.use(cors(...))) esto es redundante pero inofensivo.
  */
 router.options('*', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', req.get('Origin') || '*');
@@ -74,54 +70,160 @@ router.options('*', (req, res) => {
 });
 
 /**
+ * Utilidades internas para parseo y validación de query params
+ */
+function parsePositiveInt(value, fallback) {
+  const n = Number(value);
+  if (!Number.isFinite(n) || Number.isNaN(n)) return fallback;
+  const i = Math.trunc(n);
+  return i < 0 ? fallback : i;
+}
+
+function isUUID(value) {
+  if (typeof value !== 'string') return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+/**
+ * Construye filtros comunes (activo/includeInactive, search, categoria) sobre una query de supabase.
+ * Recibe el objeto queryBuilder devuelto por supabase.from(...).select(...)
+ */
+function applyCommonFilters(queryBuilder, { includeInactive, search, categoria }) {
+  // activo / includeInactive: si includeInactive === false => deleted_at IS NULL
+  if (!includeInactive) {
+    queryBuilder = queryBuilder.is('deleted_at', null);
+  }
+
+  // search: buscar en nombre y descripcion si existe
+  if (search && String(search).trim() !== '') {
+    const s = String(search).trim();
+    // Supabase permite ilike; usar OR para nombre o descripcion
+    // .or("nombre.ilike.%s,descripcion.ilike.%s", `%${s}%`, `%${s}%`) no es soportado directamente en builder,
+    // así que usamos .or con la sintaxis de PostgREST
+    const escaped = s.replace(/%/g, '\\%').replace(/'/g, "''");
+    queryBuilder = queryBuilder.or(`nombre.ilike.%${escaped}% , descripcion.ilike.%${escaped}%`);
+  }
+
+  // categoria: puede ser UUID (categoria_id) o nombre de categoría
+  if (categoria && String(categoria).trim() !== '') {
+    const c = String(categoria).trim();
+    if (isUUID(c)) {
+      queryBuilder = queryBuilder.eq('categoria_id', c);
+    } else {
+      // intentar por nombre de categoría (campo categoria o categoria_nombre)
+      const escaped = c.replace(/%/g, '\\%').replace(/'/g, "''");
+      // usar ilike sobre categoria o categoria_nombre
+      queryBuilder = queryBuilder.or(`categoria.ilike.%${escaped}% , categoria_nombre.ilike.%${escaped}%`);
+    }
+  }
+
+  return queryBuilder;
+}
+
+/**
  * GET /api/productos
- * - Por defecto devuelve solo activos (deleted_at IS NULL).
- * - Si ?include_inactive=true devuelve todos.
- * - Intenta usar la vista 'vista_productos_con_categoria' (si existe) para obtener datos enriquecidos.
- * - Normaliza la respuesta para que el frontend reciba siempre los campos esperados.
+ * - Soporta query params: limit, offset, search, categoria, activo
+ * - Devuelve { items: [...], meta: { total, limit, offset } }
  */
 router.get('/', async (req, res) => {
-  const includeInactive = String(req.query.include_inactive || '').toLowerCase() === 'true';
-  console.log('[productos GET] include_inactive=', includeInactive);
+  // Paginación y límites
+  const DEFAULT_LIMIT = 20;
+  const MAX_LIMIT = 200;
+
+  // Interpretación de params:
+  // - Si se pasa activo=true => devolver solo activos (deleted_at IS NULL)
+  // - Si se pasa include_inactive=true => incluir inactivos (override)
+  const activoParam = typeof req.query.activo !== 'undefined' ? String(req.query.activo).toLowerCase() : undefined;
+  const includeInactiveParam = typeof req.query.include_inactive !== 'undefined' ? String(req.query.include_inactive).toLowerCase() : undefined;
+
+  // Prioridad: include_inactive explicitamente true => include inactive
+  // else if activo provided => activo=true means includeInactive=false
+  let includeInactive = false;
+  if (includeInactiveParam === 'true') {
+    includeInactive = true;
+  } else if (typeof activoParam !== 'undefined') {
+    includeInactive = !(activoParam === 'true'); // activo=true => includeInactive=false
+  } else {
+    // default: only active
+    includeInactive = false;
+  }
+
+  // parse limit/offset
+  let limit = parsePositiveInt(req.query.limit, DEFAULT_LIMIT);
+  if (limit <= 0) limit = DEFAULT_LIMIT;
+  if (limit > MAX_LIMIT) limit = MAX_LIMIT;
+
+  let offset = parsePositiveInt(req.query.offset, 0);
+  if (offset < 0) offset = 0;
+
+  const search = typeof req.query.search === 'string' ? req.query.search : (req.query.q || '');
+  const categoria = typeof req.query.categoria === 'string' ? req.query.categoria : '';
+
+  console.log('[productos GET] params:', { limit, offset, includeInactive, search, categoria });
+
   try {
-    // Intentar leer desde la vista enriquecida primero
+    // Primero intentar leer desde la vista enriquecida
     try {
       console.log('[productos GET] intentando leer vista vista_productos_con_categoria con service role key');
+
+      // Para conteo exacto con supabase: select('*', { count: 'exact' })
+      // y luego aplicar range para paginación
       let viewQuery = supabase
         .from('vista_productos_con_categoria')
-        .select('*')
+        .select('*', { count: 'exact' })
         .order('nombre', { ascending: true });
 
-      if (!includeInactive) viewQuery = viewQuery.is('deleted_at', null);
+      viewQuery = applyCommonFilters(viewQuery, { includeInactive, search, categoria });
 
-      const { data: viewData, error: viewErr } = await viewQuery;
-      console.log('[productos GET] vista result: error=', viewErr, 'rows=', Array.isArray(viewData) ? viewData.length : viewData);
+      // rango: supabase.range(from, to) where to = offset + limit - 1
+      const from = offset;
+      const to = offset + limit - 1;
+      viewQuery = viewQuery.range(from, to);
 
-      if (!viewErr && Array.isArray(viewData) && viewData.length > 0) {
+      const { data: viewData, count: viewCount, error: viewErr } = await viewQuery;
+      console.log('[productos GET] vista result: error=', viewErr, 'rows=', Array.isArray(viewData) ? viewData.length : viewData, 'count=', viewCount);
+
+      if (!viewErr && Array.isArray(viewData)) {
+        // Normalizar y devolver con meta
         const normalized = viewData.map(normalizeProductoRow);
         res.setHeader('Cache-Control', 'no-store');
-        console.log('[productos GET] devolviendo datos desde vista, count=', normalized.length);
-        return res.json(normalized);
+        return res.json({
+          items: normalized,
+          meta: { total: typeof viewCount === 'number' ? viewCount : normalized.length, limit, offset }
+        });
       }
       console.log('[productos GET] vista no usable (vacía o error), fallback a tabla productos');
     } catch (viewEx) {
       console.error('[productos GET] excepción leyendo vista:', String(viewEx));
     }
 
-    // Fallback: consultar tabla 'productos' directamente
+    // Fallback: consultar tabla 'productos' directamente con conteo y rango
     console.log('[productos GET] consultando tabla productos (fallback)');
-    let query = supabase.from('productos').select('*').order('nombre', { ascending: true });
-    if (!includeInactive) query = query.is('deleted_at', null);
 
-    const { data, error } = await query;
-    console.log('[productos GET] productos result: error=', error, 'rows=', Array.isArray(data) ? data.length : data);
+    let tableQuery = supabase
+      .from('productos')
+      .select('*', { count: 'exact' })
+      .order('nombre', { ascending: true });
+
+    tableQuery = applyCommonFilters(tableQuery, { includeInactive, search, categoria });
+
+    const from = offset;
+    const to = offset + limit - 1;
+    tableQuery = tableQuery.range(from, to);
+
+    const { data, count, error } = await tableQuery;
+    console.log('[productos GET] productos result: error=', error, 'rows=', Array.isArray(data) ? data.length : data, 'count=', count);
+
     if (error) {
       return res.status(500).json({ message: 'Error al obtener productos', error: error.message || String(error) });
     }
 
     const normalized = (data || []).map(normalizeProductoRow);
     res.setHeader('Cache-Control', 'no-store');
-    return res.json(normalized);
+    return res.json({
+      items: normalized,
+      meta: { total: typeof count === 'number' ? count : normalized.length, limit, offset }
+    });
   } catch (err) {
     console.error('[productos GET] error inesperado:', err);
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
@@ -198,12 +300,10 @@ async function fetchProductoFromView(id) {
 /**
  * PATCH /api/productos/:id/disable
  * Borrado lógico: set deleted_at = now()
- * Devuelve el registro actualizado (normalizado). Intenta devolver la versión enriquecida desde la vista.
  */
 router.patch('/:id/disable', async (req, res) => {
   const { id } = req.params;
   try {
-    // Actualizar tabla productos
     const { data, error } = await supabase
       .from('productos')
       .update({ deleted_at: new Date().toISOString() })
@@ -212,11 +312,9 @@ router.patch('/:id/disable', async (req, res) => {
 
     if (error) return res.status(500).json({ message: 'No se pudo inhabilitar', error: error.message || String(error) });
 
-    // Intentar devolver la fila enriquecida desde la vista
     const enriched = await fetchProductoFromView(id);
     if (enriched) return res.json({ ok: true, data: enriched });
 
-    // Si no hay vista o no devolvió, normalizar el resultado directo
     const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
     return res.json({ ok: true, data: updated });
   } catch (err) {
@@ -227,7 +325,6 @@ router.patch('/:id/disable', async (req, res) => {
 /**
  * PATCH /api/productos/:id/enable
  * Reactiva producto: deleted_at = null
- * Devuelve el registro actualizado (normalizado). Intenta devolver la versión enriquecida desde la vista.
  */
 router.patch('/:id/enable', async (req, res) => {
   const { id } = req.params;
