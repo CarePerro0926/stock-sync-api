@@ -1,4 +1,4 @@
-// productos.js
+// api/productos.js
 const express = require('express');
 const router = express.Router();
 const { createClient } = require('@supabase/supabase-js');
@@ -73,13 +73,10 @@ router.options('*', (req, res) => {
   return res.sendStatus(204);
 });
 
-/**
- * GET /api/productos
- * - Por defecto devuelve solo activos (deleted_at IS NULL).
- * - Si ?include_inactive=true devuelve todos.
- * - Intenta usar la vista 'vista_productos_con_categoria' (si existe) para obtener datos enriquecidos.
- * - Normaliza la respuesta para que el frontend reciba siempre los campos esperados.
- */
+/*
+// --- RUTA ELIMINADA PARA EVITAR DUPLICACIÓN CON server.js ---
+// GET /api/productos (cuando se monta en /api/productos/) -> /api/productos/
+// Esta ruta ahora está en server.js
 router.get('/', async (req, res) => {
   const includeInactive = String(req.query.include_inactive || '').toLowerCase() === 'true';
   console.log('[productos GET] include_inactive=', includeInactive);
@@ -127,9 +124,61 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
+// --- FIN RUTA ELIMINADA ---
+*/
 
 /**
- * POST /api/productos
+ * GET /api/productos/:id (cuando se monta en /api/productos/) -> /api/productos/:id
+ * Obtiene un producto específico por su ID (id o product_id).
+ * Por defecto devuelve solo si está activo (deleted_at IS NULL).
+ * Si ?include_inactive=true se ignora el estado de borrado lógico.
+ * Devuelve el objeto del producto normalizado o un error 404.
+ * ESTA RUTA ES NECESARIA Y ESTÁ EN productos.js
+ */
+router.get('/:id', async (req, res) => {
+  const { id } = req.params;
+  const includeInactive = String(req.query.include_inactive || '').toLowerCase() === 'true';
+
+  console.log('[productos GET /:id] id=', id, ' include_inactive=', includeInactive);
+
+  if (!id) {
+    return res.status(400).json({ message: 'ID de producto es requerido' });
+  }
+
+  try {
+    let query = supabase
+      .from('productos')
+      .select('*')
+      .or(`id.eq.${id},product_id.eq.${id}`) // Buscar por id o product_id
+      .limit(1);
+
+    if (!includeInactive) {
+       query = query.is('deleted_at', null);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('[productos GET /:id] supabase error:', error);
+      return res.status(500).json({ message: 'Error al obtener producto', error: error.message || String(error) });
+    }
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({ message: 'Producto no encontrado' });
+    }
+
+    const normalized = normalizeProductoRow(data[0]);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json(normalized); // Devuelve el objeto del producto normalizado
+  } catch (err) {
+    console.error('[productos GET /:id] error inesperado:', err);
+    return res.status(500).json({ message: 'Error inesperado', error: String(err) });
+  }
+});
+
+
+/**
+ * POST /api/productos (cuando se monta en /api/productos/) -> /api/productos/
  * Crea un nuevo producto. Devuelve el registro creado normalizado.
  */
 router.post('/', async (req, res) => {
@@ -145,14 +194,36 @@ router.post('/', async (req, res) => {
 });
 
 /**
- * PUT /api/productos/:id
- * Actualiza un producto por id. Devuelve el registro actualizado normalizado.
+ * PUT /api/productos/:id (cuando se monta en /api/productos/) -> /api/productos/:id
+ * Actualiza un producto por id (buscando por id o product_id). Devuelve el registro actualizado normalizado.
+ * CORREGIDO: Usa .or(...) en lugar de .eq('id', id)
  */
 router.put('/:id', async (req, res) => {
   const { id } = req.params;
   try {
     const payload = req.body || {};
-    const { data, error } = await supabase.from('productos').update(payload).eq('id', id).select();
+
+    // Verificar si el producto existe antes de actualizar (buena práctica)
+    const { data: existingData, error: existingError } = await supabase
+      .from('productos')
+      .select('id')
+      .or(`id.eq.${id},product_id.eq.${id}`)
+      .limit(1);
+
+    if (existingError) {
+        console.error('[productos PUT /:id] supabase select error:', existingError);
+        return res.status(500).json({ message: 'Error al verificar producto', error: existingError.message || String(existingError) });
+    }
+
+    if (!existingData || existingData.length === 0) {
+        return res.status(404).json({ message: `Producto ${id} no encontrado` });
+    }
+
+    const { data, error } = await supabase
+        .from('productos')
+        .update(payload)
+        .or(`id.eq.${id},product_id.eq.${id}`) // Actualizar usando or
+        .select();
     if (error) return res.status(500).json({ message: `Error al actualizar producto ${id}`, error: error.message || String(error) });
     const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
     return res.json({ ok: true, message: `Producto ${id} actualizado`, data: updated });
@@ -162,13 +233,33 @@ router.put('/:id', async (req, res) => {
 });
 
 /**
- * DELETE /api/productos/:id
- * Elimina físicamente un producto.
+ * DELETE /api/productos/:id (cuando se monta en /api/productos/) -> /api/productos/:id
+ * Elimina físicamente un producto (buscando por id o product_id).
+ * CORREGIDO: Usa .or(...) en lugar de .eq('id', id)
  */
 router.delete('/:id', async (req, res) => {
   const { id } = req.params;
   try {
-    const { error } = await supabase.from('productos').delete().eq('id', id);
+    // Verificar si el producto existe antes de eliminar (buena práctica)
+    const { data: existingData, error: existingError } = await supabase
+      .from('productos')
+      .select('id')
+      .or(`id.eq.${id},product_id.eq.${id}`)
+      .limit(1);
+
+    if (existingError) {
+        console.error('[productos DELETE /:id] supabase select error:', existingError);
+        return res.status(500).json({ message: 'Error al verificar producto', error: existingError.message || String(existingError) });
+    }
+
+    if (!existingData || existingData.length === 0) {
+        return res.status(404).json({ message: `Producto ${id} no encontrado` });
+    }
+
+    const { error } = await supabase
+        .from('productos')
+        .delete()
+        .or(`id.eq.${id},product_id.eq.${id}`); // Eliminar usando or
     if (error) return res.status(500).json({ message: `Error al eliminar producto ${id}`, error: error.message || String(error) });
     return res.json({ ok: true, message: `Producto ${id} eliminado` });
   } catch (err) {
@@ -185,9 +276,8 @@ async function fetchProductoFromView(id) {
     const { data, error } = await supabase
       .from('vista_productos_con_categoria')
       .select('*')
-      .eq('id', id)
+      .or(`id.eq.${id},product_id.eq.${id}`) // Usar or también aquí
       .limit(1);
-
     if (error || !Array.isArray(data) || data.length === 0) return null;
     return normalizeProductoRow(data[0]);
   } catch (err) {
@@ -196,58 +286,22 @@ async function fetchProductoFromView(id) {
 }
 
 /**
- * PATCH /api/productos/:id/disable
- * Borrado lógico: set deleted_at = now()
+ * PATCH /api/productos/:id/disable (cuando se monta en /api/productos/) -> /api/productos/:id/disable
+ * Borrado lógico: set deleted_at = now() (buscando por id o product_id)
  * Devuelve el registro actualizado (normalizado). Intenta devolver la versión enriquecida desde la vista.
+ * NOTA: Esta ruta también existe en server.js. Considera moverla solo allí o aquí.
+ * Si decides dejarla aquí, comenta la versión en server.js para evitar duplicidad.
  */
-router.patch('/:id/disable', async (req, res) => {
-  const { id } = req.params;
-  try {
-    // Actualizar tabla productos
-    const { data, error } = await supabase
-      .from('productos')
-      .update({ deleted_at: new Date().toISOString() })
-      .eq('id', id)
-      .select();
-
-    if (error) return res.status(500).json({ message: 'No se pudo inhabilitar', error: error.message || String(error) });
-
-    // Intentar devolver la fila enriquecida desde la vista
-    const enriched = await fetchProductoFromView(id);
-    if (enriched) return res.json({ ok: true, data: enriched });
-
-    // Si no hay vista o no devolvió, normalizar el resultado directo
-    const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
-    return res.json({ ok: true, data: updated });
-  } catch (err) {
-    return res.status(500).json({ message: 'Error inesperado', error: String(err) });
-  }
-});
+// router.patch('/:id/disable', async (req, res) -> { ... }); // <-- Comentada aquí porque ya existe en server.js
 
 /**
- * PATCH /api/productos/:id/enable
- * Reactiva producto: deleted_at = null
+ * PATCH /api/productos/:id/enable (cuando se monta en /api/productos/) -> /api/productos/:id/enable
+ * Reactiva producto: deleted_at = null (buscando por id o product_id)
  * Devuelve el registro actualizado (normalizado). Intenta devolver la versión enriquecida desde la vista.
+ * NOTA: Esta ruta también existe en server.js. Considera moverla solo allí o aquí.
+ * Si decides dejarla aquí, comenta la versión en server.js para evitar duplicidad.
  */
-router.patch('/:id/enable', async (req, res) => {
-  const { id } = req.params;
-  try {
-    const { data, error } = await supabase
-      .from('productos')
-      .update({ deleted_at: null })
-      .eq('id', id)
-      .select();
+// router.patch('/:id/enable', async (req, res) -> { ... }); // <-- Comentada aquí porque ya existe en server.js
 
-    if (error) return res.status(500).json({ message: 'No se pudo reactivar', error: error.message || String(error) });
 
-    const enriched = await fetchProductoFromView(id);
-    if (enriched) return res.json({ ok: true, data: enriched });
-
-    const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
-    return res.json({ ok: true, data: updated });
-  } catch (err) {
-    return res.status(500).json({ message: 'Error inesperado', error: String(err) });
-  }
-});
-
-module.exports = router;
+module.exports = router; // Exporta el router para CommonJS
