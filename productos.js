@@ -60,6 +60,10 @@ function normalizeProductoRow(row = {}) {
 
 /**
  * OPTIONS handler para permitir preflight CORS en este router.
+ * Incluye Cache-Control y Pragma en Access-Control-Allow-Headers para evitar bloqueos
+ * cuando el cliente envía esos headers en la preflight.
+ *
+ * Nota: si ya manejas CORS globalmente (app.use(cors(...))) esto es redundante pero inofensivo.
  */
 router.options('*', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', req.get('Origin') || '*');
@@ -85,10 +89,10 @@ function isUUID(value) {
 }
 
 /**
- * Construye filtros comunes (activo/includeInactive, search, categoria) sobre una query de supabase.
+ * Construye filtros comunes (activo/includeInactive, search, categoria, cantidad) sobre una query de supabase.
  * Recibe el objeto queryBuilder devuelto por supabase.from(...).select(...)
  */
-function applyCommonFilters(queryBuilder, { includeInactive, search, categoria }) {
+function applyCommonFilters(queryBuilder, { includeInactive, search, categoria, cantidadFilters = {} }) {
   // activo / includeInactive: si includeInactive === false => deleted_at IS NULL
   if (!includeInactive) {
     queryBuilder = queryBuilder.is('deleted_at', null);
@@ -97,11 +101,9 @@ function applyCommonFilters(queryBuilder, { includeInactive, search, categoria }
   // search: buscar en nombre y descripcion si existe
   if (search && String(search).trim() !== '') {
     const s = String(search).trim();
-    // Supabase permite ilike; usar OR para nombre o descripcion
-    // .or("nombre.ilike.%s,descripcion.ilike.%s", `%${s}%`, `%${s}%`) no es soportado directamente en builder,
-    // así que usamos .or con la sintaxis de PostgREST
     const escaped = s.replace(/%/g, '\\%').replace(/'/g, "''");
-    queryBuilder = queryBuilder.or(`nombre.ilike.%${escaped}% , descripcion.ilike.%${escaped}%`);
+    // Sintaxis PostgREST: sin espacios alrededor de la coma
+    queryBuilder = queryBuilder.or(`nombre.ilike.%${escaped}%,descripcion.ilike.%${escaped}%`);
   }
 
   // categoria: puede ser UUID (categoria_id) o nombre de categoría
@@ -110,10 +112,21 @@ function applyCommonFilters(queryBuilder, { includeInactive, search, categoria }
     if (isUUID(c)) {
       queryBuilder = queryBuilder.eq('categoria_id', c);
     } else {
-      // intentar por nombre de categoría (campo categoria o categoria_nombre)
       const escaped = c.replace(/%/g, '\\%').replace(/'/g, "''");
-      // usar ilike sobre categoria o categoria_nombre
-      queryBuilder = queryBuilder.or(`categoria.ilike.%${escaped}% , categoria_nombre.ilike.%${escaped}%`);
+      queryBuilder = queryBuilder.or(`categoria.ilike.%${escaped}%,categoria_nombre.ilike.%${escaped}%`);
+    }
+  }
+
+  // filtros por cantidad: cantidad (igual), min_cantidad (>=), max_cantidad (<=)
+  const { cantidad, min_cantidad, max_cantidad } = cantidadFilters || {};
+  if (typeof cantidad !== 'undefined' && cantidad !== null && Number.isFinite(Number(cantidad))) {
+    queryBuilder = queryBuilder.eq('cantidad', Number(cantidad));
+  } else {
+    if (typeof min_cantidad !== 'undefined' && min_cantidad !== null && Number.isFinite(Number(min_cantidad))) {
+      queryBuilder = queryBuilder.gte('cantidad', Number(min_cantidad));
+    }
+    if (typeof max_cantidad !== 'undefined' && max_cantidad !== null && Number.isFinite(Number(max_cantidad))) {
+      queryBuilder = queryBuilder.lte('cantidad', Number(max_cantidad));
     }
   }
 
@@ -122,7 +135,7 @@ function applyCommonFilters(queryBuilder, { includeInactive, search, categoria }
 
 /**
  * GET /api/productos
- * - Soporta query params: limit, offset, search, categoria, activo
+ * - Soporta query params: limit, offset, search, categoria, activo, cantidad, min_cantidad, max_cantidad
  * - Devuelve { items: [...], meta: { total, limit, offset } }
  */
 router.get('/', async (req, res) => {
@@ -159,7 +172,13 @@ router.get('/', async (req, res) => {
   const search = typeof req.query.search === 'string' ? req.query.search : (req.query.q || '');
   const categoria = typeof req.query.categoria === 'string' ? req.query.categoria : '';
 
-  console.log('[productos GET] params:', { limit, offset, includeInactive, search, categoria });
+  // parse cantidad filters
+  const cantidad = typeof req.query.cantidad !== 'undefined' ? parseInt(req.query.cantidad, 10) : undefined;
+  const min_cantidad = typeof req.query.min_cantidad !== 'undefined' ? parseInt(req.query.min_cantidad, 10) : undefined;
+  const max_cantidad = typeof req.query.max_cantidad !== 'undefined' ? parseInt(req.query.max_cantidad, 10) : undefined;
+  const cantidadFilters = { cantidad, min_cantidad, max_cantidad };
+
+  console.log('[productos GET] params:', { limit, offset, includeInactive, search, categoria, cantidadFilters });
 
   try {
     // Primero intentar leer desde la vista enriquecida
@@ -173,7 +192,7 @@ router.get('/', async (req, res) => {
         .select('*', { count: 'exact' })
         .order('nombre', { ascending: true });
 
-      viewQuery = applyCommonFilters(viewQuery, { includeInactive, search, categoria });
+      viewQuery = applyCommonFilters(viewQuery, { includeInactive, search, categoria, cantidadFilters });
 
       // rango: supabase.range(from, to) where to = offset + limit - 1
       const from = offset;
@@ -205,7 +224,7 @@ router.get('/', async (req, res) => {
       .select('*', { count: 'exact' })
       .order('nombre', { ascending: true });
 
-    tableQuery = applyCommonFilters(tableQuery, { includeInactive, search, categoria });
+    tableQuery = applyCommonFilters(tableQuery, { includeInactive, search, categoria, cantidadFilters });
 
     const from = offset;
     const to = offset + limit - 1;
@@ -300,10 +319,12 @@ async function fetchProductoFromView(id) {
 /**
  * PATCH /api/productos/:id/disable
  * Borrado lógico: set deleted_at = now()
+ * Devuelve el registro actualizado (normalizado). Intenta devolver la versión enriquecida desde la vista.
  */
 router.patch('/:id/disable', async (req, res) => {
   const { id } = req.params;
   try {
+    // Actualizar tabla productos
     const { data, error } = await supabase
       .from('productos')
       .update({ deleted_at: new Date().toISOString() })
@@ -312,9 +333,11 @@ router.patch('/:id/disable', async (req, res) => {
 
     if (error) return res.status(500).json({ message: 'No se pudo inhabilitar', error: error.message || String(error) });
 
+    // Intentar devolver la fila enriquecida desde la vista
     const enriched = await fetchProductoFromView(id);
     if (enriched) return res.json({ ok: true, data: enriched });
 
+    // Si no hay vista o no devolvió, normalizar el resultado directo
     const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
     return res.json({ ok: true, data: updated });
   } catch (err) {
@@ -325,6 +348,7 @@ router.patch('/:id/disable', async (req, res) => {
 /**
  * PATCH /api/productos/:id/enable
  * Reactiva producto: deleted_at = null
+ * Devuelve el registro actualizado (normalizado). Intenta devolver la versión enriquecida desde la vista.
  */
 router.patch('/:id/enable', async (req, res) => {
   const { id } = req.params;
