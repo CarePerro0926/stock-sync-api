@@ -110,13 +110,13 @@ function applyCommonFilters(queryBuilder, { includeInactive, search, categoria, 
     queryBuilder = queryBuilder.is('deleted_at', null);
   }
 
-  // search: buscar en nombre y descripcion si existe
-  if (search && String(search).trim() !== '') {
-    const s = String(search).trim();
-    const escaped = s.replace(/%/g, '\\%').replace(/'/g, "''");
-    // Sintaxis PostgREST: sin espacios alrededor de la coma
-    queryBuilder = queryBuilder.or(`nombre.ilike.%${escaped}%,descripcion.ilike.%${escaped}%`);
-  }
+ // search: buscar en nombre y en categoria si existe
+if (search && String(search).trim() !== '') {
+  const s = String(search).trim();
+  const escaped = s.replace(/%/g, '\\%').replace(/'/g, "''");
+  // Sintaxis PostgREST: sin espacios alrededor de la coma
+  queryBuilder = queryBuilder.or(`nombre.ilike.%${escaped}%,categoria.ilike.%${escaped}%`);
+}
 
   // categoria: puede ser UUID (categoria_id) o nombre de categoría
   if (categoria && String(categoria).trim() !== '') {
