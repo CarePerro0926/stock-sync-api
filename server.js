@@ -190,7 +190,7 @@ app.patch('/admin/usuarios/:id/:action', authenticateJwtAdmin, async (req, res) 
       return respondError(res, 500, 'ADMIN token not configured on server');
     }
 
-    const API_USUARIOS_BASE = process.env.API_USUARIOS_BASE || process.env.API_INTERNAL_BASE || 'https://la-api-externa-que-tiene-los-usuarios.com    ';
+    const API_USUARIOS_BASE = process.env.API_USUARIOS_BASE || process.env.API_INTERNAL_BASE || 'https://la-api-externa-que-tiene-los-usuarios.com';
     const url = `${API_USUARIOS_BASE}/api/usuarios/${id}/${action}`;
 
     const resp = await axios.patch(url, null, {
@@ -303,7 +303,6 @@ app.post('/api/login', async (req, res) => {
  * Si ?include_inactivos=true se devuelven todos.
  *
  * Devuelve directamente un array (compatibilidad con frontend).
- * Esta ruta maneja el LISTADO GENERAL de productos.
  */
 app.get('/api/productos', async (req, res) => {
   try {
@@ -331,12 +330,6 @@ app.get('/api/productos', async (req, res) => {
     return res.status(200).json([]);
   }
 });
-
-// --- IMPORTACIÓN DEL ROUTER DE PRODUCTOS ---
-// Asegúrate de que la ruta sea correcta según donde esté ubicado productos.js
-const productosRouter = require('./productos.js'); // Si usas CommonJS (require/module.exports)
-// import productosRouter from './productos.js'; // Si usas ES Modules (import/export) y tienes type: module en package.json
-// --- FIN IMPORTACIÓN ---
 
 /**
  * GET /api/usuarios
@@ -372,23 +365,185 @@ app.get('/api/usuarios', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/productos
+ * Crea un nuevo producto.
+ * Requiere authenticateJwtAdmin (logueado como admin).
+ */
+app.post('/api/productos', authenticateJwtAdmin, async (req, res) => {
+  try {
+    const actor = req.user && req.user.id ? req.user.id : null;
+    const actor_username = req.user && req.user.username ? req.user.username : null;
+
+    const payload = req.body || {};
+    // Validar campos requeridos aquí si es necesario
+    // Ejemplo:
+    // if (!payload.nombre || typeof payload.nombre !== 'string' || payload.nombre.trim() === '') {
+    //   return respondError(res, 400, 'Nombre del producto es obligatorio');
+    // }
+
+    const { data, error } = await supabaseAdmin
+      .from('productos')
+      .insert([payload])
+      .select()
+      .single(); // Asumiendo que insertamos uno solo
+
+    if (error) {
+      console.error('POST /api/productos - supabase error:', error);
+      return respondError(res, 500, 'No se pudo crear el producto', error.message || String(error));
+    }
+
+    // Registrar acción en auditoría
+    try {
+      await insertAuditLog({
+        actor_id: actor,
+        actor_username,
+        action: 'producto_create',
+        target_table: 'productos',
+        target_id: data.id,
+        metadata: { new_data: data },
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for producto_create:', e);
+    }
+
+    console.log(`Producto creado por ${actor_username} con ID: ${data.id}`);
+    return res.status(201).json({ success: true, data });
+  } catch (err) {
+    console.error('API exception POST /api/productos:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+/**
+ * GET /api/productos/:id
+ * Consulta un producto por ID (activo o inactivo).
+ * Requiere authenticateJwt (logueado).
+ */
+app.get('/api/productos/:id', authenticateJwt, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
+
+    const { data, error } = await supabaseAdmin
+      .from('productos')
+      .select('*')
+      .or(`id.eq.${id},product_id.eq.${id}`)
+      .limit(1);
+
+    if (error) {
+      console.error('GET /api/productos/:id - supabase error:', error);
+      return respondError(res, 500, 'Error al consultar producto', error.message || String(error));
+    }
+
+    if (!data || data.length === 0) {
+      return respondError(res, 404, 'Producto no encontrado');
+    }
+
+    const producto = data[0];
+
+    // Registrar acción en auditoría (opcional)
+    try {
+      await insertAuditLog({
+        actor_id: req.user.id,
+        actor_username: req.user.username,
+        action: 'producto_read',
+        target_table: 'productos',
+        target_id: producto.id,
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for producto_read:', e);
+    }
+
+    return res.status(200).json(producto);
+  } catch (err) {
+    console.error('API exception GET /api/productos/:id:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+/**
+ * PUT /api/productos/:id
+ * Modifica completamente un producto por ID.
+ * Requiere authenticateJwtAdmin (logueado como admin).
+ */
+app.put('/api/productos/:id', authenticateJwtAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
+
+    const actor = req.user && req.user.id ? req.user.id : null;
+    const actor_username = req.user && req.user.username ? req.user.username : null;
+
+    // Obtener estado anterior para auditoría
+    const { data: prevData, error: prevError } = await supabaseAdmin
+      .from('productos')
+      .select('*')
+      .or(`id.eq.${id},product_id.eq.${id}`)
+      .limit(1);
+
+    if (prevError) {
+      console.error('PUT /api/productos/:id - supabase error fetching previous state:', prevError);
+      return respondError(res, 500, 'Error al consultar producto previo', prevError.message || String(prevError));
+    }
+
+    if (!prevData || prevData.length === 0) {
+      return respondError(res, 404, 'Producto no encontrado');
+    }
+
+    const previousRow = prevData[0];
+    const payload = req.body || {};
+
+    const { data, error } = await supabaseAdmin
+      .from('productos')
+      .update(payload)
+      .or(`id.eq.${id},product_id.eq.${id}`)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('PUT /api/productos/:id - supabase error updating:', error);
+      return respondError(res, 500, 'No se pudo actualizar el producto', error.message || String(error));
+    }
+
+    // Registrar acción en auditoría
+    try {
+      await insertAuditLog({
+        actor_id: actor,
+        actor_username,
+        action: 'producto_update',
+        target_table: 'productos',
+        target_id: id,
+        metadata: { before: previousRow, after: data },
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for producto_update:', e);
+    }
+
+    console.log(`Producto ${id} actualizado por ${actor_username}`);
+    return res.status(200).json({ success: true, data });
+  } catch (err) {
+    console.error('API exception PUT /api/productos/:id:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
 
 /**
  * PATCH /api/productos/:id/disable
- * Requiere header x-admin-token (server-side).
- * Esta ruta maneja la INHABILITACIÓN LÓGICA de productos.
+ * Requiere authenticateJwtAdmin (logueado como admin).
  */
-app.patch('/api/productos/:id/disable', async (req, res) => {
-  if (!isAdminRequest(req)) {
-    console.warn('PATCH disable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
-    return respondError(res, 403, 'Forbidden');
-  }
-
+app.patch('/api/productos/:id/disable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
   if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
 
   try {
-    // obtener estado previo
+    const actor = req.user && req.user.id ? req.user.id : null;
+    const actor_username = req.user && req.user.username ? req.user.username : null;
+
+    // Obtener estado previo
     const { data: prevData } = await supabaseAdmin.from('productos').select('*').or(`id.eq.${id},product_id.eq.${id}`).limit(1);
     const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
 
@@ -405,11 +560,11 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
 
     const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
 
-    // insertar audit log (no bloquear la respuesta si falla)
+    // Registrar acción en auditoría
     try {
       await insertAuditLog({
-        actor_id: null,
-        actor_username: null,
+        actor_id: actor,
+        actor_username,
         action: 'producto_disable',
         target_table: 'productos',
         target_id: id,
@@ -421,28 +576,27 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
       console.warn('Audit log failed for producto_disable:', e);
     }
 
+    console.log(`Producto ${id} inhabilitado por ${actor_username}`);
     return res.status(200).json({ success: true, data: Array.isArray(data) ? data : [data] });
   } catch (err) {
-    console.error('API exception PATCH disable:', err);
+    console.error('API exception PATCH disable producto:', err);
     return respondError(res, 500, 'Error interno', String(err));
   }
 });
 
 /**
  * PATCH /api/productos/:id/enable
- * Requiere header x-admin-token (server-side).
- * Esta ruta maneja la HABILITACIÓN LÓGICA de productos.
+ * Requiere authenticateJwtAdmin (logueado como admin).
  */
-app.patch('/api/productos/:id/enable', async (req, res) => {
-  if (!isAdminRequest(req)) {
-    console.warn('PATCH enable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
-    return respondError(res, 403, 'Forbidden');
-  }
-
+app.patch('/api/productos/:id/enable', authenticateJwtAdmin, async (req, res) => {
   const { id } = req.params;
   if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
 
   try {
+    const actor = req.user && req.user.id ? req.user.id : null;
+    const actor_username = req.user && req.user.username ? req.user.username : null;
+
+    // Obtener estado previo
     const { data: prevData } = await supabaseAdmin.from('productos').select('*').or(`id.eq.${id},product_id.eq.${id}`).limit(1);
     const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
 
@@ -459,10 +613,11 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
 
     const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
 
+    // Registrar acción en auditoría
     try {
       await insertAuditLog({
-        actor_id: null,
-        actor_username: null,
+        actor_id: actor,
+        actor_username,
         action: 'producto_enable',
         target_table: 'productos',
         target_id: id,
@@ -474,9 +629,10 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
       console.warn('Audit log failed for producto_enable:', e);
     }
 
+    console.log(`Producto ${id} habilitado por ${actor_username}`);
     return res.status(200).json({ success: true, data: Array.isArray(data) ? data : [data] });
   } catch (err) {
-    console.error('API exception PATCH enable:', err);
+    console.error('API exception PATCH enable producto:', err);
     return respondError(res, 500, 'Error interno', String(err));
   }
 });
@@ -685,17 +841,6 @@ app.get('/api/mis-datos', authenticateJwt, async (req, res) => {
     return respondError(res, 500, 'Error interno', String(err));
   }
 });
-
-// --- MONTAJE DEL ROUTER DE PRODUCTOS ---
-// Monta todas las rutas definidas en productos.js bajo el prefijo /api/productos
-// Esto hará accesibles:
-// - POST /api/productos (Crear)
-// - GET /api/productos/:id (Consultar uno - AHORA FUNCIONA)
-// - PUT /api/productos/:id (Modificar)
-// - DELETE /api/productos/:id (Eliminar físico)
-// Las rutas disable/enable siguen en server.js como estaban.
-app.use('/api/productos', productosRouter);
-// --- FIN MONTAJE ---
 
 // Health check
 app.get('/api/health', (req, res) => res.status(200).json({ ok: true }));
