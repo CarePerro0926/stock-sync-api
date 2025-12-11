@@ -3,6 +3,9 @@ const express = require('express');
 const router = express.Router();
 const { createClient } = require('@supabase/supabase-js');
 
+// Log para confirmar que la versión del archivo se está cargando
+console.log('[productos.js] cargado - ' + new Date().toISOString());
+
 // Usa la clave SERVICE_ROLE en backend para evitar bloqueos por RLS
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
@@ -22,16 +25,25 @@ function normalizeProductoRow(row = {}) {
   const nombre = row?.nombre ?? row?.name ?? row?.display_name ?? '';
   const categoria_nombre = row?.categoria_nombre ?? row?.categoria ?? row?.category_name ?? '';
 
-  const cantidad = (typeof row?.cantidad === 'number')
-    ? row.cantidad
-    : (typeof row?.stock === 'number' ? row.stock : 0);
+  // Normalizar cantidad: aceptar number o string numérico
+  let cantidad = 0;
+  if (typeof row?.cantidad === 'number') {
+    cantidad = row.cantidad;
+  } else if (typeof row?.cantidad === 'string' && row.cantidad.trim() !== '') {
+    const parsed = Number(row.cantidad.replace(/[^\d.-]/g, ''));
+    cantidad = Number.isFinite(parsed) ? parsed : 0;
+  } else if (typeof row?.stock === 'number') {
+    cantidad = row.stock;
+  } else if (typeof row?.stock === 'string' && row.stock.trim() !== '') {
+    const parsed = Number(row.stock.replace(/[^\d.-]/g, ''));
+    cantidad = Number.isFinite(parsed) ? parsed : 0;
+  }
 
   // Normalizar precio: puede venir como number o string con separadores
   let precio = null;
   if (typeof row?.precio === 'number') {
     precio = row.precio;
   } else if (typeof row?.precio === 'string' && row.precio.trim() !== '') {
-    // eliminar caracteres no numéricos excepto punto y guion
     const cleaned = String(row.precio).replace(/[^\d.-]/g, '');
     const parsed = Number(cleaned);
     precio = Number.isFinite(parsed) ? parsed : null;
@@ -139,6 +151,9 @@ function applyCommonFilters(queryBuilder, { includeInactive, search, categoria, 
  * - Devuelve { items: [...], meta: { total, limit, offset } }
  */
 router.get('/', async (req, res) => {
+  // Log de req.query para depuración
+  console.log('[productos GET] req.query =', req.query);
+
   // Paginación y límites
   const DEFAULT_LIMIT = 20;
   const MAX_LIMIT = 200;
@@ -172,13 +187,13 @@ router.get('/', async (req, res) => {
   const search = typeof req.query.search === 'string' ? req.query.search : (req.query.q || '');
   const categoria = typeof req.query.categoria === 'string' ? req.query.categoria : '';
 
-  // parse cantidad filters
-  const cantidad = typeof req.query.cantidad !== 'undefined' ? parseInt(req.query.cantidad, 10) : undefined;
-  const min_cantidad = typeof req.query.min_cantidad !== 'undefined' ? parseInt(req.query.min_cantidad, 10) : undefined;
-  const max_cantidad = typeof req.query.max_cantidad !== 'undefined' ? parseInt(req.query.max_cantidad, 10) : undefined;
+  // parse cantidad filters (asegurar números o undefined)
+  const cantidad = typeof req.query.cantidad !== 'undefined' && req.query.cantidad !== '' ? parseInt(req.query.cantidad, 10) : undefined;
+  const min_cantidad = typeof req.query.min_cantidad !== 'undefined' && req.query.min_cantidad !== '' ? parseInt(req.query.min_cantidad, 10) : undefined;
+  const max_cantidad = typeof req.query.max_cantidad !== 'undefined' && req.query.max_cantidad !== '' ? parseInt(req.query.max_cantidad, 10) : undefined;
   const cantidadFilters = { cantidad, min_cantidad, max_cantidad };
 
-  console.log('[productos GET] params:', { limit, offset, includeInactive, search, categoria, cantidadFilters });
+  console.log('[productos GET] params parsed:', { limit, offset, includeInactive, search, categoria, cantidadFilters });
 
   try {
     // Primero intentar leer desde la vista enriquecida
@@ -197,6 +212,7 @@ router.get('/', async (req, res) => {
       // rango: supabase.range(from, to) where to = offset + limit - 1
       const from = offset;
       const to = offset + limit - 1;
+      console.log('[productos GET] vista range from=', from, 'to=', to);
       viewQuery = viewQuery.range(from, to);
 
       const { data: viewData, count: viewCount, error: viewErr } = await viewQuery;
@@ -228,6 +244,7 @@ router.get('/', async (req, res) => {
 
     const from = offset;
     const to = offset + limit - 1;
+    console.log('[productos GET] tabla range from=', from, 'to=', to);
     tableQuery = tableQuery.range(from, to);
 
     const { data, count, error } = await tableQuery;
