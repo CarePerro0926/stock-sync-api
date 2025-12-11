@@ -424,6 +424,376 @@ app.get('/api/usuarios', async (req, res) => {
   }
 });
 
+// --- RUTAS DE CATEGORÍAS ---
+
+/**
+ * GET /api/categorias
+ * Por defecto devuelve solo categorías activas (deleted_at IS NULL).
+ * Si ?include_inactivos=true se devuelven todas.
+ *
+ * Devuelve directamente un array (compatibilidad con frontend).
+ * Requiere authenticateJwt (logueado).
+ */
+app.get('/api/categorias', authenticateJwt, async (req, res) => {
+  try {
+    const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
+
+    let query = supabaseAdmin
+      .from('categorias') // Asegúrate del nombre de la tabla
+      .select('id, nombre, descripcion, deleted_at') // Ajusta los campos según tu tabla
+      .order('nombre', { ascending: true });
+
+    if (!includeInactivos) {
+      query = query.is('deleted_at', null);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('GET /api/categorias - supabase error:', error.message || error);
+      return res.status(500).json({ success: false, message: 'Error al obtener categorías', error: error.message });
+    }
+
+    // Registrar acción en auditoría (opcional)
+    try {
+      await insertAuditLog({
+        actor_id: req.user.id,
+        actor_username: req.user.username,
+        action: 'categorias_list',
+        target_table: 'categorias',
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for categorias_list:', e);
+    }
+
+    return res.status(200).json(data || []);
+  } catch (err) {
+    console.error('API exception GET /api/categorias:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+/**
+ * GET /api/categorias/nombre/:nombre
+ * Consulta una categoría por nombre (activo o inactivo).
+ * Requiere authenticateJwt (logueado).
+ * Acepta nombre codificado si tiene espacios o caracteres especiales.
+ */
+app.get('/api/categorias/nombre/:nombre', authenticateJwt, async (req, res) => {
+  try {
+    const { nombre } = req.params;
+    if (!nombre || typeof nombre !== 'string' || nombre.trim() === '') {
+      return respondError(res, 400, 'Nombre de categoría inválido');
+    }
+
+    // Decodificar el nombre en caso de que venga codificado (por ejemplo, "nombre%20con%20espacios")
+    const nombreDecodificado = decodeURIComponent(nombre).trim();
+
+    const { data, error } = await supabaseAdmin
+      .from('categorias') // Asegúrate del nombre de la tabla
+      .select('*') // Ajusta los campos según tu tabla
+      .ilike('nombre', nombreDecodificado) // Usar ilike para coincidencia parcial insensible a mayúsculas
+      .limit(1); // Asumiendo nombre único
+
+    if (error) {
+      console.error('GET /api/categorias/nombre/:nombre - supabase error:', error);
+      return respondError(res, 500, 'Error al consultar categoría', error.message || String(error));
+    }
+
+    if (!data || data.length === 0) {
+      return respondError(res, 404, 'Categoría no encontrada');
+    }
+
+    const categoria = data[0];
+
+    // Registrar acción en auditoría
+    try {
+      await insertAuditLog({
+        actor_id: req.user.id,
+        actor_username: req.user.username,
+        action: 'categoria_read',
+        target_table: 'categorias',
+        target_id: categoria.id,
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for categoria_read:', e);
+    }
+
+    return res.status(200).json(categoria);
+  } catch (err) {
+    console.error('API exception GET /api/categorias/nombre/:nombre:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+/**
+ * POST /api/categorias
+ * Crea una nueva categoría.
+ * Requiere authenticateJwtAdmin (logueado como admin).
+ */
+app.post('/api/categorias', authenticateJwtAdmin, async (req, res) => {
+  try {
+    const actor = req.user && req.user.id ? req.user.id : null;
+    const actor_username = req.user && req.user.username ? req.user.username : null;
+
+    const payload = req.body || {};
+    // Validar campos requeridos aquí si es necesario
+    // if (!payload.nombre || typeof payload.nombre !== 'string' || payload.nombre.trim() === '') {
+    //   return respondError(res, 400, 'Nombre de la categoría es obligatorio');
+    // }
+
+    const { data, error } = await supabaseAdmin
+      .from('categorias') // Asegúrate del nombre de la tabla
+      .insert([payload])
+      .select()
+      .single(); // Asumiendo que insertamos uno solo
+
+    if (error) {
+      console.error('POST /api/categorias - supabase error:', error);
+      return respondError(res, 500, 'No se pudo crear la categoría', error.message || String(error));
+    }
+
+    // Registrar acción en auditoría
+    try {
+      await insertAuditLog({
+        actor_id: actor,
+        actor_username,
+        action: 'categoria_create',
+        target_table: 'categorias',
+        target_id: data.id,
+        metadata: { new_data: data },
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for categoria_create:', e);
+    }
+
+    console.log(`Categoría '${data.nombre}' creada por ${actor_username} con ID: ${data.id}`);
+    return res.status(201).json({ success: true, data });
+  } catch (err) {
+    console.error('API exception POST /api/categorias:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+/**
+ * PUT /api/categorias/nombre/:nombre
+ * Modifica completamente una categoría por nombre.
+ * Requiere authenticateJwtAdmin (logueado como admin).
+ * Acepta nombre codificado si tiene espacios o caracteres especiales.
+ */
+app.put('/api/categorias/nombre/:nombre', authenticateJwtAdmin, async (req, res) => {
+  try {
+    const { nombre: nombreOriginal } = req.params;
+    if (!nombreOriginal || typeof nombreOriginal !== 'string' || nombreOriginal.trim() === '') {
+      return respondError(res, 400, 'Nombre de categoría original inválido');
+    }
+
+    const actor = req.user && req.user.id ? req.user.id : null;
+    const actor_username = req.user && req.user.username ? req.user.username : null;
+
+    // Decodificar el nombre original
+    const nombreOriginalDecodificado = decodeURIComponent(nombreOriginal).trim();
+
+    // Obtener estado anterior para auditoría
+    const { data: prevData, error: prevError } = await supabaseAdmin
+      .from('categorias') // Asegúrate del nombre de la tabla
+      .select('*')
+      .ilike('nombre', nombreOriginalDecodificado)
+      .limit(1);
+
+    if (prevError) {
+      console.error('PUT /api/categorias/nombre/:nombre - supabase error fetching previous state:', prevError);
+      return respondError(res, 500, 'Error al consultar categoría previa', prevError.message || String(prevError));
+    }
+
+    if (!prevData || prevData.length === 0) {
+      return respondError(res, 404, 'Categoría no encontrada');
+    }
+
+    const previousRow = prevData[0];
+    const payload = req.body || {};
+
+    // IMPORTANTE: Evitar cambiar el nombre en PUT si se identifica por nombre
+    // Si se desea cambiar el nombre, se debe usar un ID o una ruta específica para rename.
+    // Por ahora, forzamos que el nombre no cambie si se identifica por nombre.
+    // payload.nombre = nombreOriginalDecodificado; // Descomentar si se desea fijar el nombre
+
+    const { data, error } = await supabaseAdmin
+      .from('categorias') // Asegúrate del nombre de la tabla
+      .update(payload)
+      .ilike('nombre', nombreOriginalDecodificado) // Asumiendo nombre único
+      .select()
+      .single();
+
+    if (error) {
+      console.error('PUT /api/categorias/nombre/:nombre - supabase error updating:', error);
+      return respondError(res, 500, 'No se pudo actualizar la categoría', error.message || String(error));
+    }
+
+    // Registrar acción en auditoría
+    try {
+      await insertAuditLog({
+        actor_id: actor,
+        actor_username,
+        action: 'categoria_update',
+        target_table: 'categorias',
+        target_id: data.id, // Usamos el ID del registro actualizado
+        metadata: { before: previousRow, after: data },
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for categoria_update:', e);
+    }
+
+    console.log(`Categoría '${nombreOriginalDecodificado}' actualizada por ${actor_username}`);
+    return res.status(200).json({ success: true, data });
+  } catch (err) {
+    console.error('API exception PUT /api/categorias/nombre/:nombre:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+/**
+ * PATCH /api/categorias/nombre/:nombre/disable
+ * Inhabilita una categoría por nombre (soft delete).
+ * Requiere authenticateJwtAdmin (logueado como admin).
+ * Acepta nombre codificado si tiene espacios o caracteres especiales.
+ */
+app.patch('/api/categorias/nombre/:nombre/disable', authenticateJwtAdmin, async (req, res) => {
+  const { nombre } = req.params;
+  if (!nombre || typeof nombre !== 'string' || nombre.trim() === '') {
+    return respondError(res, 400, 'Nombre de categoría inválido');
+  }
+
+  try {
+    const actor = req.user && req.user.id ? req.user.id : null;
+    const actor_username = req.user && req.user.username ? req.user.username : null;
+
+    // Decodificar el nombre
+    const nombreDecodificado = decodeURIComponent(nombre).trim();
+
+    // Obtener estado previo
+    const { data: prevData } = await supabaseAdmin
+      .from('categorias') // Asegúrate del nombre de la tabla
+      .select('*')
+      .ilike('nombre', nombreDecodificado)
+      .limit(1);
+    const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
+
+    if (!previousRow) {
+      return respondError(res, 404, 'Categoría no encontrada');
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('categorias') // Asegúrate del nombre de la tabla
+      .update({ deleted_at: new Date().toISOString() })
+      .ilike('nombre', nombreDecodificado) // Asumiendo nombre único
+      .select();
+
+    if (error) {
+      console.error('API error updating categoria disable:', error);
+      return respondError(res, 500, 'No se pudo inhabilitar la categoría', error.message || String(error));
+    }
+
+    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
+
+    // Registrar acción en auditoría
+    try {
+      await insertAuditLog({
+        actor_id: actor,
+        actor_username,
+        action: 'categoria_disable',
+        target_table: 'categorias',
+        target_id: updatedRow.id, // Usamos el ID del registro inhabilitado
+        reason: req.body?.reason || null,
+        metadata: { before: previousRow, after: updatedRow },
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for categoria_disable:', e);
+    }
+
+    console.log(`Categoría '${nombreDecodificado}' inhabilitada por ${actor_username}`);
+    return res.status(200).json({ success: true, data: updatedRow });
+  } catch (err) {
+    console.error('API exception PATCH disable categoria:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+/**
+ * PATCH /api/categorias/nombre/:nombre/enable
+ * Habilita una categoría por nombre (revertir soft delete).
+ * Requiere authenticateJwtAdmin (logueado como admin).
+ * Acepta nombre codificado si tiene espacios o caracteres especiales.
+ */
+app.patch('/api/categorias/nombre/:nombre/enable', authenticateJwtAdmin, async (req, res) => {
+  const { nombre } = req.params;
+  if (!nombre || typeof nombre !== 'string' || nombre.trim() === '') {
+    return respondError(res, 400, 'Nombre de categoría inválido');
+  }
+
+  try {
+    const actor = req.user && req.user.id ? req.user.id : null;
+    const actor_username = req.user && req.user.username ? req.user.username : null;
+
+    // Decodificar el nombre
+    const nombreDecodificado = decodeURIComponent(nombre).trim();
+
+    // Obtener estado previo
+    const { data: prevData } = await supabaseAdmin
+      .from('categorias') // Asegúrate del nombre de la tabla
+      .select('*')
+      .ilike('nombre', nombreDecodificado)
+      .limit(1);
+    const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
+
+    if (!previousRow) {
+      return respondError(res, 404, 'Categoría no encontrada');
+    }
+
+    const { data, error } = await supabaseAdmin
+      .from('categorias') // Asegúrate del nombre de la tabla
+      .update({ deleted_at: null })
+      .ilike('nombre', nombreDecodificado) // Asumiendo nombre único
+      .select();
+
+    if (error) {
+      console.error('API error updating categoria enable:', error);
+      return respondError(res, 500, 'No se pudo habilitar la categoría', error.message || String(error));
+    }
+
+    const updatedRow = Array.isArray(data) && data.length ? data[0] : data;
+
+    // Registrar acción en auditoría
+    try {
+      await insertAuditLog({
+        actor_id: actor,
+        actor_username,
+        action: 'categoria_enable',
+        target_table: 'categorias',
+        target_id: updatedRow.id, // Usamos el ID del registro habilitado
+        reason: req.body?.reason || null,
+        metadata: { before: previousRow, after: updatedRow },
+        ip: req.ip
+      });
+    } catch (e) {
+      console.warn('Audit log failed for categoria_enable:', e);
+    }
+
+    console.log(`Categoría '${nombreDecodificado}' habilitada por ${actor_username}`);
+    return res.status(200).json({ success: true, data: updatedRow });
+  } catch (err) {
+    console.error('API exception PATCH enable categoria:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+// --- FIN RUTAS DE CATEGORÍAS ---
+
 /**
  * POST /api/productos
  * Crea un nuevo producto.
