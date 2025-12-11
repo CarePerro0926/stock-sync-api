@@ -9,6 +9,7 @@ import axios from 'axios';
 import { createClient } from '@supabase/supabase-js';
 
 const app = express();
+
 app.use(express.json());
 app.use(helmet());
 
@@ -83,6 +84,7 @@ const authenticateJwt = async (req, res, next) => {
   try {
     const auth = req.headers.authorization || '';
     if (!auth.startsWith('Bearer ')) return res.status(401).json({ success: false, message: 'No autorizado' });
+
     const token = auth.split(' ')[1];
     const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
     if (!secret) return res.status(500).json({ success: false, message: 'JWT secret no configurado en servidor' });
@@ -108,6 +110,7 @@ const authenticateJwt = async (req, res, next) => {
     }
 
     const dbUser = data[0];
+
     if (dbUser.deleted_at) {
       return res.status(403).json({ success: false, message: 'Usuario inhabilitado' });
     }
@@ -170,7 +173,6 @@ const insertAuditLog = async ({ actor_id = null, actor_username = null, action, 
 };
 
 // --- RUTAS ---
-
 /**
  * ADMIN PROXY
  * Protegido por authenticateJwtAdmin para evitar exponer ADMIN_API_TOKEN al cliente.
@@ -178,9 +180,7 @@ const insertAuditLog = async ({ actor_id = null, actor_username = null, action, 
 app.patch('/admin/usuarios/:id/:action', authenticateJwtAdmin, async (req, res) => {
   try {
     const { id, action } = req.params;
-
     if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
-
     if (action !== 'enable' && action !== 'disable') {
       return respondError(res, 400, 'Acción inválida. Solo se permite "enable" o "disable".');
     }
@@ -246,7 +246,6 @@ app.post('/api/login', async (req, res) => {
     };
 
     let usersResult = await queryUserFromTable('usuarios');
-
     if (usersResult.error) {
       usersResult = await queryUserFromTable('users');
     }
@@ -257,6 +256,7 @@ app.post('/api/login', async (req, res) => {
 
     const users = usersResult.data;
     const user = Array.isArray(users) && users.length > 0 ? users[0] : null;
+
     if (!user) {
       return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
     }
@@ -307,11 +307,49 @@ app.post('/api/login', async (req, res) => {
 app.get('/api/productos', async (req, res) => {
   try {
     const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
-
     let query = supabaseAdmin
       .from('productos')
       .select('id, product_id, nombre, precio, cantidad, categoria_id, deleted_at')
       .order('id', { ascending: true });
+    if (!includeInactivos) {
+      query = query.is('deleted_at', null);
+    }
+    const { data, error } = await query;
+    if (error) {
+      console.error('GET /api/productos - supabase error:', error.message || error);
+      return res.status(200).json([]);
+    }
+    return res.status(200).json(data || []);
+  } catch (err) {
+    console.error('API exception GET /api/productos:', err);
+    return res.status(200).json([]);
+  }
+});
+
+// --- NUEVA RUTA: GET /api/productos/:id ---
+/**
+ * GET /api/productos/:id
+ * Obtiene un producto específico por su ID (id o product_id).
+ * Por defecto devuelve solo si está activo (deleted_at IS NULL).
+ * Si ?include_inactivos=true se ignora el estado de borrado lógico.
+ * Devuelve el objeto del producto o un error 404.
+ */
+app.get('/api/productos/:id', async (req, res) => {
+  const { id } = req.params;
+  const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
+
+  console.log('[server GET /api/productos/:id] id=', id, ' include_inactivos=', includeInactivos);
+
+  if (!id) {
+    return res.status(400).json({ message: 'ID de producto es requerido' });
+  }
+
+  try {
+    let query = supabaseAdmin
+      .from('productos')
+      .select('id, product_id, nombre, precio, cantidad, categoria_id, deleted_at')
+      .or(`id.eq.${id},product_id.eq.${id}`) // Buscar por id o product_id
+      .limit(1);
 
     if (!includeInactivos) {
       query = query.is('deleted_at', null);
@@ -320,16 +358,21 @@ app.get('/api/productos', async (req, res) => {
     const { data, error } = await query;
 
     if (error) {
-      console.error('GET /api/productos - supabase error:', error.message || error);
-      return res.status(200).json([]);
+      console.error('GET /api/productos/:id - supabase error:', error.message || error);
+      return res.status(500).json({ message: 'Error al obtener producto', error: error.message || String(error) });
     }
 
-    return res.status(200).json(data || []);
+    if (!data || data.length === 0) {
+      return res.status(404).json({ message: 'Producto no encontrado' });
+    }
+
+    return res.status(200).json(data[0]); // Devuelve el objeto del producto
   } catch (err) {
-    console.error('API exception GET /api/productos:', err);
-    return res.status(200).json([]);
+    console.error('API exception GET /api/productos/:id:', err);
+    return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
+// --- FIN NUEVA RUTA ---
 
 /**
  * GET /api/usuarios
@@ -352,7 +395,6 @@ app.get('/api/usuarios', async (req, res) => {
     }
 
     const { data, error } = await query;
-
     if (error) {
       console.warn('GET /api/usuarios - supabase returned error:', error.message || error);
       return res.status(200).json([]);
@@ -365,7 +407,6 @@ app.get('/api/usuarios', async (req, res) => {
   }
 });
 
-
 /**
  * PATCH /api/productos/:id/disable
  * Requiere header x-admin-token (server-side).
@@ -375,7 +416,6 @@ app.patch('/api/productos/:id/disable', async (req, res) => {
     console.warn('PATCH disable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
     return respondError(res, 403, 'Forbidden');
   }
-
   const { id } = req.params;
   if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
 
@@ -428,7 +468,6 @@ app.patch('/api/productos/:id/enable', async (req, res) => {
     console.warn('PATCH enable - request rejected as non-admin. x-admin-token present:', !!req.headers['x-admin-token']);
     return respondError(res, 403, 'Forbidden');
   }
-
   const { id } = req.params;
   if (!isValidIdFlexible(id)) return respondError(res, 400, 'ID inválido');
 
