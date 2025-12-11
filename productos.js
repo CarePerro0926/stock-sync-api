@@ -15,13 +15,10 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 function normalizeProductoRow(row = {}) {
   const idRaw = row?.id ?? row?.product_id ?? null;
   const id = idRaw === null || idRaw === undefined ? '' : String(idRaw);
-
   const deletedAtRaw = row?.deleted_at ?? row?.deletedAt ?? null;
   const deleted_at = (deletedAtRaw === null || deletedAtRaw === undefined) ? null : String(deletedAtRaw).trim();
-
   const nombre = row?.nombre ?? row?.name ?? row?.display_name ?? '';
   const categoria_nombre = row?.categoria_nombre ?? row?.categoria ?? row?.category_name ?? '';
-
   const cantidad = (typeof row?.cantidad === 'number')
     ? row.cantidad
     : (typeof row?.stock === 'number' ? row.stock : 0);
@@ -73,59 +70,7 @@ router.options('*', (req, res) => {
   return res.sendStatus(204);
 });
 
-/*
-// --- RUTA ELIMINADA PARA EVITAR DUPLICACIÓN CON server.js ---
-// GET /api/productos (cuando se monta en /api/productos/) -> /api/productos/
-// Esta ruta ahora está en server.js
-router.get('/', async (req, res) => {
-  const includeInactive = String(req.query.include_inactive || '').toLowerCase() === 'true';
-  console.log('[productos GET] include_inactive=', includeInactive);
-  try {
-    // Intentar leer desde la vista enriquecida primero
-    try {
-      console.log('[productos GET] intentando leer vista vista_productos_con_categoria con service role key');
-      let viewQuery = supabase
-        .from('vista_productos_con_categoria')
-        .select('*')
-        .order('nombre', { ascending: true });
-
-      if (!includeInactive) viewQuery = viewQuery.is('deleted_at', null);
-
-      const { data: viewData, error: viewErr } = await viewQuery;
-      console.log('[productos GET] vista result: error=', viewErr, 'rows=', Array.isArray(viewData) ? viewData.length : viewData);
-
-      if (!viewErr && Array.isArray(viewData) && viewData.length > 0) {
-        const normalized = viewData.map(normalizeProductoRow);
-        res.setHeader('Cache-Control', 'no-store');
-        console.log('[productos GET] devolviendo datos desde vista, count=', normalized.length);
-        return res.json(normalized);
-      }
-      console.log('[productos GET] vista no usable (vacía o error), fallback a tabla productos');
-    } catch (viewEx) {
-      console.error('[productos GET] excepción leyendo vista:', String(viewEx));
-    }
-
-    // Fallback: consultar tabla 'productos' directamente
-    console.log('[productos GET] consultando tabla productos (fallback)');
-    let query = supabase.from('productos').select('*').order('nombre', { ascending: true });
-    if (!includeInactive) query = query.is('deleted_at', null);
-
-    const { data, error } = await query;
-    console.log('[productos GET] productos result: error=', error, 'rows=', Array.isArray(data) ? data.length : data);
-    if (error) {
-      return res.status(500).json({ message: 'Error al obtener productos', error: error.message || String(error) });
-    }
-
-    const normalized = (data || []).map(normalizeProductoRow);
-    res.setHeader('Cache-Control', 'no-store');
-    return res.json(normalized);
-  } catch (err) {
-    console.error('[productos GET] error inesperado:', err);
-    return res.status(500).json({ message: 'Error inesperado', error: String(err) });
-  }
-});
-// --- FIN RUTA ELIMINADA ---
-*/
+// --- RUTAS DE PRODUCTOS (CRUD) ---
 
 /**
  * GET /api/productos/:id (cuando se monta en /api/productos/) -> /api/productos/:id
@@ -133,7 +78,6 @@ router.get('/', async (req, res) => {
  * Por defecto devuelve solo si está activo (deleted_at IS NULL).
  * Si ?include_inactive=true se ignora el estado de borrado lógico.
  * Devuelve el objeto del producto normalizado o un error 404.
- * ESTA RUTA ES NECESARIA Y ESTÁ EN productos.js
  */
 router.get('/:id', async (req, res) => {
   const { id } = req.params;
@@ -176,7 +120,6 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-
 /**
  * POST /api/productos (cuando se monta en /api/productos/) -> /api/productos/
  * Crea un nuevo producto. Devuelve el registro creado normalizado.
@@ -187,7 +130,7 @@ router.post('/', async (req, res) => {
     const { data, error } = await supabase.from('productos').insert(payload).select();
     if (error) return res.status(500).json({ message: 'Error al crear producto', error: error.message || String(error) });
     const created = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
-    return res.status(201).json({ ok: true, message: 'Producto creado', data: created });
+    return res.status(201).json({ ok: true, message: 'Producto creado',  created });
   } catch (err) {
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
@@ -196,7 +139,6 @@ router.post('/', async (req, res) => {
 /**
  * PUT /api/productos/:id (cuando se monta en /api/productos/) -> /api/productos/:id
  * Actualiza un producto por id (buscando por id o product_id). Devuelve el registro actualizado normalizado.
- * CORREGIDO: Usa .or(...) en lugar de .eq('id', id)
  */
 router.put('/:id', async (req, res) => {
   const { id } = req.params;
@@ -204,7 +146,7 @@ router.put('/:id', async (req, res) => {
     const payload = req.body || {};
 
     // Verificar si el producto existe antes de actualizar (buena práctica)
-    const { data: existingData, error: existingError } = await supabase
+    const {  existingData, error: existingError } = await supabase
       .from('productos')
       .select('id')
       .or(`id.eq.${id},product_id.eq.${id}`)
@@ -226,7 +168,7 @@ router.put('/:id', async (req, res) => {
         .select();
     if (error) return res.status(500).json({ message: `Error al actualizar producto ${id}`, error: error.message || String(error) });
     const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
-    return res.json({ ok: true, message: `Producto ${id} actualizado`, data: updated });
+    return res.json({ ok: true, message: `Producto ${id} actualizado`,  updated });
   } catch (err) {
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
@@ -235,13 +177,12 @@ router.put('/:id', async (req, res) => {
 /**
  * DELETE /api/productos/:id (cuando se monta en /api/productos/) -> /api/productos/:id
  * Elimina físicamente un producto (buscando por id o product_id).
- * CORREGIDO: Usa .or(...) en lugar de .eq('id', id)
  */
 router.delete('/:id', async (req, res) => {
   const { id } = req.params;
   try {
     // Verificar si el producto existe antes de eliminar (buena práctica)
-    const { data: existingData, error: existingError } = await supabase
+    const {  existingData, error: existingError } = await supabase
       .from('productos')
       .select('id')
       .or(`id.eq.${id},product_id.eq.${id}`)
@@ -267,41 +208,6 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-/**
- * Helper interno: obtener producto enriquecido desde la vista (si existe)
- * Devuelve null si no se encuentra o si hay error.
- */
-async function fetchProductoFromView(id) {
-  try {
-    const { data, error } = await supabase
-      .from('vista_productos_con_categoria')
-      .select('*')
-      .or(`id.eq.${id},product_id.eq.${id}`) // Usar or también aquí
-      .limit(1);
-    if (error || !Array.isArray(data) || data.length === 0) return null;
-    return normalizeProductoRow(data[0]);
-  } catch (err) {
-    return null;
-  }
-}
-
-/**
- * PATCH /api/productos/:id/disable (cuando se monta en /api/productos/) -> /api/productos/:id/disable
- * Borrado lógico: set deleted_at = now() (buscando por id o product_id)
- * Devuelve el registro actualizado (normalizado). Intenta devolver la versión enriquecida desde la vista.
- * NOTA: Esta ruta también existe en server.js. Considera moverla solo allí o aquí.
- * Si decides dejarla aquí, comenta la versión en server.js para evitar duplicidad.
- */
-// router.patch('/:id/disable', async (req, res) -> { ... }); // <-- Comentada aquí porque ya existe en server.js
-
-/**
- * PATCH /api/productos/:id/enable (cuando se monta en /api/productos/) -> /api/productos/:id/enable
- * Reactiva producto: deleted_at = null (buscando por id o product_id)
- * Devuelve el registro actualizado (normalizado). Intenta devolver la versión enriquecida desde la vista.
- * NOTA: Esta ruta también existe en server.js. Considera moverla solo allí o aquí.
- * Si decides dejarla aquí, comenta la versión en server.js para evitar duplicidad.
- */
-// router.patch('/:id/enable', async (req, res) -> { ... }); // <-- Comentada aquí porque ya existe en server.js
-
+// Las rutas disable/enable ya están en server.js, así que no se duplican aquí.
 
 module.exports = router; // Exporta el router para CommonJS
