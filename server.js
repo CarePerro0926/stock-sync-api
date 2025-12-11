@@ -440,7 +440,7 @@ app.get('/api/categorias', authenticateJwt, async (req, res) => {
 
     let query = supabaseAdmin
       .from('categorias') // Asegúrate del nombre de la tabla
-      .select('id, nombre, descripcion, deleted_at') // Ajusta los campos según tu tabla
+      .select('id,nombre,deleted_at') // Ajusta los campos según tu tabla
       .order('nombre', { ascending: true });
 
     if (!includeInactivos) {
