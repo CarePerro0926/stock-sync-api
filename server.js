@@ -1073,6 +1073,121 @@ app.patch('/api/productos/:id/enable', authenticateJwtAdmin, async (req, res) =>
 });
 
 /**
+ * RUTAS DE MOVIMIENTOS DE INVENTARIO
+ */
+
+app.post('/api/movimientos', authenticateJwtAdmin, async (req, res) => {
+  try {
+    const { product_id, type, quantity, reason } = req.body || {};
+
+    if (!product_id || !type || (typeof quantity === 'undefined' || quantity === null)) {
+      return respondError(res, 400, 'Faltan campos obligatorios: product_id, type, quantity');
+    }
+
+    const t = String(type).toUpperCase();
+    if (!['IN', 'OUT'].includes(t)) {
+      return respondError(res, 400, 'Tipo inválido. Debe ser "IN" o "OUT"');
+    }
+
+    const payload = {
+      product_id,
+      type: t,
+      quantity: Number(quantity),
+      reason: reason || null
+    };
+
+    const { data, error } = await supabaseAdmin
+      .from('inventory_movements')
+      .insert([payload])
+      .select()
+      .single();
+
+    if (error) {
+      console.error('POST /api/movimientos - supabase error:', error);
+      return respondError(res, 500, 'No se pudo registrar el movimiento', error.message || String(error));
+    }
+
+    try {
+      if (typeof insertAuditLog === 'function') {
+        await insertAuditLog({
+          actor_id: req.user?.id || null,
+          actor_username: req.user?.username || null,
+          action: 'inventory_movement_create',
+          target_table: 'inventory_movements',
+          target_id: data.id,
+          reason: reason || null,
+          metadata: { payload },
+          ip: req.ip
+        });
+      }
+    } catch (e) {
+      console.warn('Audit log failed for inventory_movement_create:', e);
+    }
+
+    return res.status(201).json({ success: true, data });
+  } catch (err) {
+    console.error('API exception POST /api/movimientos:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+app.get('/api/movimientos', authenticateJwtAdmin, async (req, res) => {
+  try {
+    const { product_id, type, limit, offset } = req.query || {};
+
+    let query = supabaseAdmin
+      .from('inventory_movements')
+      .select('id, product_id, type, quantity, reason, created_at')
+      .order('created_at', { ascending: false });
+
+    if (product_id) query = query.eq('product_id', product_id);
+    if (type) query = query.eq('type', String(type).toUpperCase());
+    if (limit) query = query.limit(Number(limit));
+    if (offset) query = query.range(Number(offset), Number(offset) + (Number(limit || 100) - 1));
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('GET /api/movimientos - supabase error:', error);
+      return respondError(res, 500, 'Error al obtener movimientos', error.message || String(error));
+    }
+
+    return res.status(200).json(data || []);
+  } catch (err) {
+    console.error('API exception GET /api/movimientos:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+app.get('/api/movimientos/:id', authenticateJwtAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) return respondError(res, 400, 'ID requerido');
+
+    const { data, error } = await supabaseAdmin
+      .from('inventory_movements')
+      .select('id, product_id, type, quantity, reason, created_at')
+      .eq('id', id)
+      .limit(1);
+
+    if (error) {
+      console.error('GET /api/movimientos/:id - supabase error:', error);
+      return respondError(res, 500, 'Error al obtener movimiento', error.message || String(error));
+    }
+
+    if (!data || data.length === 0) {
+      return respondError(res, 404, 'Movimiento no encontrado');
+    }
+
+    return res.status(200).json(data[0]);
+  } catch (err) {
+    console.error('API exception GET /api/movimientos/:id:', err);
+    return respondError(res, 500, 'Error interno', String(err));
+  }
+});
+
+
+/**
  * GET /api/usuarios/:id
  * Consulta un usuario por ID (activo o inactivo).
  * Requiere authenticateJwt (logueado).
