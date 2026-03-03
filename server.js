@@ -391,6 +391,38 @@ app.get('/api/productos', async (req, res) => {
 });
 
 /**
+ * GET /api/proveedores
+ * Devuelve proveedores activos o todos si ?include_inactivos=true
+ */
+app.get('/api/proveedores', async (req, res) => {
+  try {
+    const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
+
+    let query = supabaseAdmin
+      .from('proveedores') // asegúrate que la tabla exista en Supabase
+      .select('id, nombre, telefono, email, deleted_at')
+      .order('id', { ascending: true });
+
+    if (!includeInactivos) {
+      query = query.is('deleted_at', null);
+    }
+
+    const { data, error } = await query;
+
+    if (error) {
+      console.error('GET /api/proveedores - supabase error:', error.message || error);
+      return res.status(500).json({ success: false, message: 'Error al obtener proveedores', error: error.message });
+    }
+
+    return res.status(200).json(data || []);
+  } catch (err) {
+    console.error('API exception GET /api/proveedores:', err);
+    return res.status(500).json({ success: false, message: 'Error interno', error: String(err) });
+  }
+});
+
+
+/**
  * GET /api/usuarios
  * - AHORA devuelve TODOS los usuarios por defecto (activos e inactivos).
  * - Si se pasa ?include_inactivos=false se filtran (opcional).
