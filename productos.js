@@ -236,9 +236,21 @@ router.get('/', async (req, res) => {
     console.log('[productos GET] consultando tabla productos (fallback)');
 
     let tableQuery = supabase
-      .from('productos')
-      .select('*', { count: 'exact' })
-      .order('nombre', { ascending: true });
+  .from('productos')
+  .select(`
+    id,
+    product_id,
+    nombre,
+    precio,
+    cantidad,
+    categoria_id,
+    categoria,
+    categoria_nombre,
+    deleted_at,
+    categorias ( nombre )
+  `, { count: 'exact' })
+  .order('nombre', { ascending: true });
+
 
     tableQuery = applyCommonFilters(tableQuery, { includeInactive, search, categoria, cantidadFilters });
 
