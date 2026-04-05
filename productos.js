@@ -213,6 +213,7 @@ if (error) {
 const { data: cats } = await supabase.from('categorias').select('id, nombre');
 const catMap = {};
 (cats || []).forEach(c => { catMap[c.id] = c.nombre; });
+console.log('[productos GET] catMap:', catMap);
 
 const normalized = (data || []).map(row => {
   row.categoria_nombre = catMap[row.categoria_id] || 'Sin Categoría';
