@@ -902,7 +902,7 @@ app.get('/api/productos/:id', authenticateJwt, async (req, res) => {
     const { data, error } = await supabaseAdmin
       .from('productos')
       .select('*')
-      .or(`id.eq.${id},product_id.eq.${id}`)
+      .eq('id', Number(id))
       .limit(1);
 
     if (error) {
@@ -973,7 +973,7 @@ app.put('/api/productos/:id', authenticateJwtAdmin, async (req, res) => {
     const { data, error } = await supabaseAdmin
       .from('productos')
       .update(payload)
-      .or(`id.eq.${id},product_id.eq.${id}`)
+      .eq('id', Number(id))
       .select()
       .single();
 
