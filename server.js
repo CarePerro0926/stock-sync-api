@@ -477,7 +477,7 @@ app.get('/api/usuarios', async (req, res) => {
  * Devuelve directamente un array (compatibilidad con frontend).
  * Requiere authenticateJwt (logueado).
  */
-app.get('/api/categorias', authenticateJwt, async (req, res) => {
+app.get('/api/categorias', async (req, res) => {
   try {
     const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
 
