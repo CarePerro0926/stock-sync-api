@@ -188,7 +188,7 @@ router.get('/', async (req, res) => {
         categoria_id,
         categoria,
         categoria_nombre,
-        deleted_at,
+        deleted_at
       `, { count: 'exact' })
       .order('nombre', { ascending: true });
 
