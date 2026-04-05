@@ -378,6 +378,7 @@ app.get('/api/productos', async (req, res) => {
         categoria_id,
         categoria,
         categoria_nombre,
+        deleted_at,
         categorias ( nombre )
       `)
       .order('id', { ascending: true });
