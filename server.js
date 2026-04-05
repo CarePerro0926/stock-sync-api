@@ -363,6 +363,10 @@ app.post('/api/login', async (req, res) => {
  */
 app.get('/api/productos', async (req, res) => {
   try {
+    const { data: cats } = await supabaseAdmin.from('categorias').select('id, nombre');
+    const catMap = {};
+    (cats || []).forEach(c => { catMap[c.id] = c.nombre; });
+
     const { data, error } = await supabaseAdmin
       .from('productos')
       .select(`
@@ -371,8 +375,7 @@ app.get('/api/productos', async (req, res) => {
         precio,
         cantidad,
         categoria_id,
-        deleted_at,
-        categorias ( nombre )
+        deleted_at
       `)
       .is('deleted_at', null)
       .order('nombre', { ascending: true });
@@ -384,7 +387,7 @@ app.get('/api/productos', async (req, res) => {
     const normalized = (data || []).map(p => ({
       id: p.id,
       nombre: p.nombre || 'Sin nombre',
-      categoria_nombre: p.categorias?.nombre || 'Sin Categoría',
+      categoria_nombre: catMap[p.categoria_id] || 'Sin Categoría',
       cantidad: p.cantidad ?? 0,
       precio: p.precio ?? null,
       deleted_at: p.deleted_at || null,
