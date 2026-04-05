@@ -196,64 +196,29 @@ router.get('/', async (req, res) => {
   console.log('[productos GET] params parsed:', { limit, offset, includeInactive, search, categoria, cantidadFilters });
 
   try {
-    // Primero intentar leer desde la vista enriquecida
-    try {
-      console.log('[productos GET] intentando leer vista vista_productos_con_categoria con service role key');
-
-      // Para conteo exacto con supabase: select('*', { count: 'exact' })
-      // y luego aplicar range para paginación
-      let viewQuery = supabase
-        .from('vista_productos_con_categoria')
-        .select('*', { count: 'exact' })
-        .order('nombre', { ascending: true });
-
-      viewQuery = applyCommonFilters(viewQuery, { includeInactive, search, categoria, cantidadFilters });
-
-      // rango: supabase.range(from, to) where to = offset + limit - 1
-      const from = offset;
-      const to = offset + limit - 1;
-      console.log('[productos GET] vista range from=', from, 'to=', to);
-      viewQuery = viewQuery.range(from, to);
-
-      const { data: viewData, count: viewCount, error: viewErr } = await viewQuery;
-      console.log('[productos GET] vista result: error=', viewErr, 'rows=', Array.isArray(viewData) ? viewData.length : viewData, 'count=', viewCount);
-
-      if (!viewErr && Array.isArray(viewData)) {
-        // Normalizar y devolver con meta
-        const normalized = viewData.map(normalizeProductoRow);
-        res.setHeader('Cache-Control', 'no-store');
-        return res.json({
-          items: normalized,
-          meta: { total: typeof viewCount === 'number' ? viewCount : normalized.length, limit, offset }
-        });
-      }
-      console.log('[productos GET] vista no usable (vacía o error), fallback a tabla productos');
-    } catch (viewEx) {
-      console.error('[productos GET] excepción leyendo vista:', String(viewEx));
-    }
-
-    // Fallback: consultar tabla 'productos' directamente con conteo y rango
-    console.log('[productos GET] consultando tabla productos (fallback)');
+    // Consultar directamente la tabla 'productos'
+    console.log('[productos GET] consultando tabla productos directamente');
 
     let tableQuery = supabase
-  .from('productos')
-  .select(`
-    id,
-    product_id,
-    nombre,
-    precio,
-    cantidad,
-    categoria_id,
-    categoria,
-    categoria_nombre,
-    deleted_at,
-    categorias ( nombre )
-  `, { count: 'exact' })
-  .order('nombre', { ascending: true });
+      .from('productos')
+      .select(`
+        id,
+        product_id,
+        nombre,
+        precio,
+        cantidad,
+        categoria_id,
+        categoria,
+        categoria_nombre,
+        deleted_at,
+        categorias ( nombre )
+      `, { count: 'exact' })
+      .order('nombre', { ascending: true });
 
-
+    // Aplicar filtros comunes
     tableQuery = applyCommonFilters(tableQuery, { includeInactive, search, categoria, cantidadFilters });
 
+    // rango: supabase.range(from, to) where to = offset + limit - 1
     const from = offset;
     const to = offset + limit - 1;
     console.log('[productos GET] tabla range from=', from, 'to=', to);
@@ -277,6 +242,7 @@ router.get('/', async (req, res) => {
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
+
 
 /**
  * POST /api/productos
