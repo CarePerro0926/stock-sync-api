@@ -361,96 +361,40 @@ app.post('/api/login', async (req, res) => {
  * - Soporta query params: limit, offset, search, categoria, activo, cantidad, min_cantidad, max_cantidad
  * - Devuelve { items: [...], meta: { total, limit, offset } }
  */
-router.get('/', async (req, res) => {
-  // Log de req.query para depuración
-  console.log('[productos GET] req.query =', req.query);
-
-  // Paginación y límites
-  const DEFAULT_LIMIT = 20;
-  const MAX_LIMIT = 200;
-
-  // Interpretación de params:
-  // - Si se pasa activo=true => devolver solo activos (deleted_at IS NULL)
-  // - Si se pasa include_inactive=true => incluir inactivos (override)
-  const activoParam = typeof req.query.activo !== 'undefined' ? String(req.query.activo).toLowerCase() : undefined;
-  const includeInactiveParam = typeof req.query.include_inactive !== 'undefined' ? String(req.query.include_inactive).toLowerCase() : undefined;
-
-  // Prioridad: include_inactive explicitamente true => include inactive
-  // else if activo provided => activo=true means includeInactive=false
-  let includeInactive = false;
-  if (includeInactiveParam === 'true') {
-    includeInactive = true;
-  } else if (typeof activoParam !== 'undefined') {
-    includeInactive = !(activoParam === 'true'); // activo=true => includeInactive=false
-  } else {
-    // default: only active
-    includeInactive = false;
-  }
-
-  // parse limit/offset
-  let limit = parsePositiveInt(req.query.limit, DEFAULT_LIMIT);
-  if (limit <= 0) limit = DEFAULT_LIMIT;
-  if (limit > MAX_LIMIT) limit = MAX_LIMIT;
-
-  let offset = parsePositiveInt(req.query.offset, 0);
-  if (offset < 0) offset = 0;
-
-  const search = typeof req.query.search === 'string' ? req.query.search : (req.query.q || '');
-  const categoria = typeof req.query.categoria === 'string' ? req.query.categoria : '';
-
-  // parse cantidad filters (asegurar números o undefined)
-  const cantidad = typeof req.query.cantidad !== 'undefined' && req.query.cantidad !== '' ? parseInt(req.query.cantidad, 10) : undefined;
-  const min_cantidad = typeof req.query.min_cantidad !== 'undefined' && req.query.min_cantidad !== '' ? parseInt(req.query.min_cantidad, 10) : undefined;
-  const max_cantidad = typeof req.query.max_cantidad !== 'undefined' && req.query.max_cantidad !== '' ? parseInt(req.query.max_cantidad, 10) : undefined;
-  const cantidadFilters = { cantidad, min_cantidad, max_cantidad };
-
-  console.log('[productos GET] params parsed:', { limit, offset, includeInactive, search, categoria, cantidadFilters });
-
+app.get('/api/productos', async (req, res) => {
   try {
-    // Consultar directamente la tabla 'productos'
-    console.log('[productos GET] consultando tabla productos directamente');
-
-    let tableQuery = supabase
+    const { data, error } = await supabaseAdmin
       .from('productos')
       .select(`
         id,
-        product_id,
         nombre,
         precio,
         cantidad,
         categoria_id,
-        categoria,
-        categoria_nombre,
         deleted_at,
         categorias ( nombre )
-      `, { count: 'exact' })
+      `)
+      .is('deleted_at', null)
       .order('nombre', { ascending: true });
 
-    // Aplicar filtros comunes
-    tableQuery = applyCommonFilters(tableQuery, { includeInactive, search, categoria, cantidadFilters });
-
-    // rango: supabase.range(from, to) where to = offset + limit - 1
-    const from = offset;
-    const to = offset + limit - 1;
-    console.log('[productos GET] tabla range from=', from, 'to=', to);
-    tableQuery = tableQuery.range(from, to);
-
-    const { data, count, error } = await tableQuery;
-    console.log('[productos GET] productos result: error=', error, 'rows=', Array.isArray(data) ? data.length : data, 'count=', count);
-
     if (error) {
-      return res.status(500).json({ message: 'Error al obtener productos', error: error.message || String(error) });
+      return res.status(500).json({ success: false, message: 'Error al obtener productos', error: error.message });
     }
 
-    const normalized = (data || []).map(normalizeProductoRow);
+    const normalized = (data || []).map(p => ({
+      id: p.id,
+      nombre: p.nombre || 'Sin nombre',
+      categoria_nombre: p.categorias?.nombre || 'Sin Categoría',
+      cantidad: p.cantidad ?? 0,
+      precio: p.precio ?? null,
+      deleted_at: p.deleted_at || null,
+    }));
+
     res.setHeader('Cache-Control', 'no-store');
-    return res.json({
-      items: normalized,
-      meta: { total: typeof count === 'number' ? count : normalized.length, limit, offset }
-    });
+    return res.json(normalized);
   } catch (err) {
-    console.error('[productos GET] error inesperado:', err);
-    return res.status(500).json({ message: 'Error inesperado', error: String(err) });
+    console.error('GET /api/productos error:', err);
+    return res.status(500).json({ success: false, message: 'Error interno', error: String(err) });
   }
 });
 
