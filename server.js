@@ -358,16 +358,59 @@ app.post('/api/login', async (req, res) => {
 
 /**
  * GET /api/productos
- * Por defecto devuelve solo productos activos (deleted_at IS NULL).
- * Si ?include_inactivos=true se devuelven todos.
- *
- * Devuelve directamente un array (compatibilidad con frontend).
+ * - Soporta query params: limit, offset, search, categoria, activo, cantidad, min_cantidad, max_cantidad
+ * - Devuelve { items: [...], meta: { total, limit, offset } }
  */
-app.get('/api/productos', async (req, res) => {
-  try {
-    const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
+router.get('/', async (req, res) => {
+  // Log de req.query para depuración
+  console.log('[productos GET] req.query =', req.query);
 
-    let query = supabaseAdmin
+  // Paginación y límites
+  const DEFAULT_LIMIT = 20;
+  const MAX_LIMIT = 200;
+
+  // Interpretación de params:
+  // - Si se pasa activo=true => devolver solo activos (deleted_at IS NULL)
+  // - Si se pasa include_inactive=true => incluir inactivos (override)
+  const activoParam = typeof req.query.activo !== 'undefined' ? String(req.query.activo).toLowerCase() : undefined;
+  const includeInactiveParam = typeof req.query.include_inactive !== 'undefined' ? String(req.query.include_inactive).toLowerCase() : undefined;
+
+  // Prioridad: include_inactive explicitamente true => include inactive
+  // else if activo provided => activo=true means includeInactive=false
+  let includeInactive = false;
+  if (includeInactiveParam === 'true') {
+    includeInactive = true;
+  } else if (typeof activoParam !== 'undefined') {
+    includeInactive = !(activoParam === 'true'); // activo=true => includeInactive=false
+  } else {
+    // default: only active
+    includeInactive = false;
+  }
+
+  // parse limit/offset
+  let limit = parsePositiveInt(req.query.limit, DEFAULT_LIMIT);
+  if (limit <= 0) limit = DEFAULT_LIMIT;
+  if (limit > MAX_LIMIT) limit = MAX_LIMIT;
+
+  let offset = parsePositiveInt(req.query.offset, 0);
+  if (offset < 0) offset = 0;
+
+  const search = typeof req.query.search === 'string' ? req.query.search : (req.query.q || '');
+  const categoria = typeof req.query.categoria === 'string' ? req.query.categoria : '';
+
+  // parse cantidad filters (asegurar números o undefined)
+  const cantidad = typeof req.query.cantidad !== 'undefined' && req.query.cantidad !== '' ? parseInt(req.query.cantidad, 10) : undefined;
+  const min_cantidad = typeof req.query.min_cantidad !== 'undefined' && req.query.min_cantidad !== '' ? parseInt(req.query.min_cantidad, 10) : undefined;
+  const max_cantidad = typeof req.query.max_cantidad !== 'undefined' && req.query.max_cantidad !== '' ? parseInt(req.query.max_cantidad, 10) : undefined;
+  const cantidadFilters = { cantidad, min_cantidad, max_cantidad };
+
+  console.log('[productos GET] params parsed:', { limit, offset, includeInactive, search, categoria, cantidadFilters });
+
+  try {
+    // Consultar directamente la tabla 'productos'
+    console.log('[productos GET] consultando tabla productos directamente');
+
+    let tableQuery = supabase
       .from('productos')
       .select(`
         id,
@@ -380,27 +423,36 @@ app.get('/api/productos', async (req, res) => {
         categoria_nombre,
         deleted_at,
         categorias ( nombre )
-      `)
-      .order('id', { ascending: true });
+      `, { count: 'exact' })
+      .order('nombre', { ascending: true });
 
-    if (!includeInactivos) {
-      query = query.is('deleted_at', null);
-    }
+    // Aplicar filtros comunes
+    tableQuery = applyCommonFilters(tableQuery, { includeInactive, search, categoria, cantidadFilters });
 
-    const { data, error } = await query;
+    // rango: supabase.range(from, to) where to = offset + limit - 1
+    const from = offset;
+    const to = offset + limit - 1;
+    console.log('[productos GET] tabla range from=', from, 'to=', to);
+    tableQuery = tableQuery.range(from, to);
+
+    const { data, count, error } = await tableQuery;
+    console.log('[productos GET] productos result: error=', error, 'rows=', Array.isArray(data) ? data.length : data, 'count=', count);
 
     if (error) {
-      console.error('GET /api/productos - supabase error:', error.message || error);
-      return res.status(200).json([]);
+      return res.status(500).json({ message: 'Error al obtener productos', error: error.message || String(error) });
     }
 
-    return res.status(200).json(data || []);
+    const normalized = (data || []).map(normalizeProductoRow);
+    res.setHeader('Cache-Control', 'no-store');
+    return res.json({
+      items: normalized,
+      meta: { total: typeof count === 'number' ? count : normalized.length, limit, offset }
+    });
   } catch (err) {
-    console.error('API exception GET /api/productos:', err);
-    return res.status(200).json([]);
+    console.error('[productos GET] error inesperado:', err);
+    return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
-
 
 /**
  * GET /api/proveedores
