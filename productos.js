@@ -147,36 +147,15 @@ if (search && String(search).trim() !== '') {
 
 /**
  * GET /api/productos
- * - Soporta query params: limit, offset, search, categoria, activo, cantidad, min_cantidad, max_cantidad
  * - Devuelve { items: [...], meta: { total, limit, offset } }
+ * - Esta versión es solo para probar sin filtros ni normalizador
  */
 router.get('/', async (req, res) => {
-  // Log de req.query para depuración
   console.log('[productos GET] req.query =', req.query);
 
-  // Paginación y límites
   const DEFAULT_LIMIT = 20;
   const MAX_LIMIT = 200;
 
-  // Interpretación de params:
-  // - Si se pasa activo=true => devolver solo activos (deleted_at IS NULL)
-  // - Si se pasa include_inactive=true => incluir inactivos (override)
-  const activoParam = typeof req.query.activo !== 'undefined' ? String(req.query.activo).toLowerCase() : undefined;
-  const includeInactiveParam = typeof req.query.include_inactive !== 'undefined' ? String(req.query.include_inactive).toLowerCase() : undefined;
-
-  // Prioridad: include_inactive explicitamente true => include inactive
-  // else if activo provided => activo=true means includeInactive=false
-  let includeInactive = false;
-  if (includeInactiveParam === 'true') {
-    includeInactive = true;
-  } else if (typeof activoParam !== 'undefined') {
-    includeInactive = !(activoParam === 'true'); // activo=true => includeInactive=false
-  } else {
-    // default: only active
-    includeInactive = false;
-  }
-
-  // parse limit/offset
   let limit = parsePositiveInt(req.query.limit, DEFAULT_LIMIT);
   if (limit <= 0) limit = DEFAULT_LIMIT;
   if (limit > MAX_LIMIT) limit = MAX_LIMIT;
@@ -184,44 +163,17 @@ router.get('/', async (req, res) => {
   let offset = parsePositiveInt(req.query.offset, 0);
   if (offset < 0) offset = 0;
 
-  const search = typeof req.query.search === 'string' ? req.query.search : (req.query.q || '');
-  const categoria = typeof req.query.categoria === 'string' ? req.query.categoria : '';
-
-  // parse cantidad filters (asegurar números o undefined)
-  const cantidad = typeof req.query.cantidad !== 'undefined' && req.query.cantidad !== '' ? parseInt(req.query.cantidad, 10) : undefined;
-  const min_cantidad = typeof req.query.min_cantidad !== 'undefined' && req.query.min_cantidad !== '' ? parseInt(req.query.min_cantidad, 10) : undefined;
-  const max_cantidad = typeof req.query.max_cantidad !== 'undefined' && req.query.max_cantidad !== '' ? parseInt(req.query.max_cantidad, 10) : undefined;
-  const cantidadFilters = { cantidad, min_cantidad, max_cantidad };
-
-  console.log('[productos GET] params parsed:', { limit, offset, includeInactive, search, categoria, cantidadFilters });
-
   try {
-    // Consultar directamente la tabla 'productos'
     console.log('[productos GET] consultando tabla productos directamente');
 
+    // Consulta sin filtros ni normalizador
     let tableQuery = supabase
       .from('productos')
-      .select(`
-        id,
-        product_id,
-        nombre,
-        precio,
-        cantidad,
-        categoria_id,
-        categoria,
-        categoria_nombre,
-        deleted_at,
-        categorias ( nombre )
-      `, { count: 'exact' })
+      .select('*', { count: 'exact' }) // trae todas las columnas
       .order('nombre', { ascending: true });
 
-    // Aplicar filtros comunes
-    tableQuery = applyCommonFilters(tableQuery, { includeInactive, search, categoria, cantidadFilters });
-
-    // rango: supabase.range(from, to) where to = offset + limit - 1
     const from = offset;
     const to = offset + limit - 1;
-    console.log('[productos GET] tabla range from=', from, 'to=', to);
     tableQuery = tableQuery.range(from, to);
 
     const { data, count, error } = await tableQuery;
@@ -231,17 +183,17 @@ router.get('/', async (req, res) => {
       return res.status(500).json({ message: 'Error al obtener productos', error: error.message || String(error) });
     }
 
-    const normalized = (data || []).map(normalizeProductoRow);
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
-      items: normalized,
-      meta: { total: typeof count === 'number' ? count : normalized.length, limit, offset }
+      items: data, // datos crudos
+      meta: { total: typeof count === 'number' ? count : (data || []).length, limit, offset }
     });
   } catch (err) {
     console.error('[productos GET] error inesperado:', err);
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
+
 
 
 /**
