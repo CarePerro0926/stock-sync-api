@@ -23,7 +23,7 @@ function normalizeProductoRow(row = {}) {
   const deleted_at = (deletedAtRaw === null || deletedAtRaw === undefined) ? null : String(deletedAtRaw).trim();
 
   const nombre = row?.nombre ?? row?.name ?? row?.display_name ?? '';
-  const categoria_nombre = row?.categoria_nombre ?? row?.categoria ?? row?.category_name ?? '';
+  const categoria_nombre = row?.categorias?.nombre || row?.categoria_nombre || row?.categoria || row?.category_name || '';
 
   // Normalizar cantidad: aceptar number o string numérico
   let cantidad = 0;
