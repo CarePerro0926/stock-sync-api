@@ -369,7 +369,17 @@ app.get('/api/productos', async (req, res) => {
 
     let query = supabaseAdmin
       .from('productos')
-      .select('id, product_id, nombre, precio, cantidad, categoria_id, deleted_at')
+      .select(`
+        id,
+        product_id,
+        nombre,
+        precio,
+        cantidad,
+        categoria_id,
+        categoria,
+        categoria_nombre,
+        categorias ( nombre )
+      `)
       .order('id', { ascending: true });
 
     if (!includeInactivos) {
@@ -389,6 +399,7 @@ app.get('/api/productos', async (req, res) => {
     return res.status(200).json([]);
   }
 });
+
 
 /**
  * GET /api/proveedores
