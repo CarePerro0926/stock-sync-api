@@ -17,68 +17,33 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
  */
 function normalizeProductoRow(row = {}) {
   const idRaw = row?.id ?? row?.product_id ?? null;
-  const id = idRaw === null || idRaw === undefined ? '' : String(idRaw);
+  const id = idRaw === null ? '' : String(idRaw);
 
-  const deletedAtRaw = row?.deleted_at ?? row?.deletedAt ?? null;
-  const deleted_at = (deletedAtRaw === null || deletedAtRaw === undefined) ? null : String(deletedAtRaw).trim();
+  const nombre = row?.nombre ?? row?.name ?? '';
 
-  const nombre = row?.nombre ?? row?.name ?? row?.display_name ?? '';
+  const categoria_nombre = row?.categoria_nombre
+    || row?.categorias?.nombre
+    || row?.categoria
+    || 'Sin Categoría';
 
-  // Aquí está la clave: siempre devolver algo en categoria
-  const categoria = row?.categorias?.nombre || row?.categoria || row?.categoria_nombre || row?.category_name || 'Sin Categoría';
-
-  return {
-    id,
-    nombre,
-    precio: row?.precio ?? '',
-    cantidad: row?.cantidad ?? 0,
-    categoria,
-    deleted_at
-  };
-}
-
-
-  // Normalizar cantidad: aceptar number o string numérico
   let cantidad = 0;
-  if (typeof row?.cantidad === 'number') {
-    cantidad = row.cantidad;
-  } else if (typeof row?.cantidad === 'string' && row.cantidad.trim() !== '') {
-    const parsed = Number(row.cantidad.replace(/[^\d.-]/g, ''));
-    cantidad = Number.isFinite(parsed) ? parsed : 0;
-  } else if (typeof row?.stock === 'number') {
-    cantidad = row.stock;
-  } else if (typeof row?.stock === 'string' && row.stock.trim() !== '') {
-    const parsed = Number(row.stock.replace(/[^\d.-]/g, ''));
-    cantidad = Number.isFinite(parsed) ? parsed : 0;
-  }
+  if (typeof row?.cantidad === 'number') cantidad = row.cantidad;
+  else if (typeof row?.stock === 'number') cantidad = row.stock;
 
-  // Normalizar precio: puede venir como number o string con separadores
   let precio = null;
-  if (typeof row?.precio === 'number') {
-    precio = row.precio;
-  } else if (typeof row?.precio === 'string' && row.precio.trim() !== '') {
-    const cleaned = String(row.precio).replace(/[^\d.-]/g, '');
-    const parsed = Number(cleaned);
-    precio = Number.isFinite(parsed) ? parsed : null;
-  } else if (typeof row?.precio_unitario === 'number') {
-    precio = row.precio_unitario;
-  } else if (typeof row?.unit_price === 'number') {
-    precio = row.unit_price;
-  } else {
-    precio = null;
-  }
+  if (typeof row?.precio === 'number') precio = row.precio;
+
+  const deleted_at = row?.deleted_at ?? null;
 
   return {
     id,
     nombre: nombre || 'Sin nombre',
-    categoria_nombre: categoria_nombre || 'Sin Categoría',
+    categoria_nombre,
     cantidad,
     precio,
-    deleted_at: (deleted_at === '' || deleted_at === 'null' || deleted_at === 'undefined') ? null : deleted_at,
-    // conservar flags si existen
-    disabled: !!(row?.disabled === true || String(row?.disabled ?? '').trim().toLowerCase() === 'true'),
-    inactivo: !!(row?.inactivo === true || String(row?.inactivo ?? '').trim().toLowerCase() === 'true'),
-    _inactive: Boolean(deleted_at) || !!(row?.disabled) || !!(row?.inactivo),
+    deleted_at,
+    disabled: !!(row?.disabled),
+    inactivo: !!(row?.inactivo),
     _raw: row
   };
 }
@@ -238,13 +203,21 @@ router.get('/', async (req, res) => {
     tableQuery = tableQuery.range(from, to);
 
     const { data, count, error } = await tableQuery;
-    console.log('[productos GET] productos result: error=', error, 'rows=', Array.isArray(data) ? data.length : data, 'count=', count);
+console.log('[productos GET] productos result: error=', error, 'rows=', Array.isArray(data) ? data.length : data, 'count=', count);
 
-    if (error) {
-      return res.status(500).json({ message: 'Error al obtener productos', error: error.message || String(error) });
-    }
+if (error) {
+  return res.status(500).json({ message: 'Error al obtener productos', error: error.message || String(error) });
+}
 
-    const normalized = (data || []).map(normalizeProductoRow);
+// ✅ NUEVO: traer categorías y asignar el nombre antes de normalizar
+const { data: cats } = await supabase.from('categorias').select('id, nombre');
+const catMap = {};
+(cats || []).forEach(c => { catMap[c.id] = c.nombre; });
+
+const normalized = (data || []).map(row => {
+  row.categoria_nombre = catMap[row.categoria_id] || 'Sin Categoría';
+  return normalizeProductoRow(row);
+});
     res.setHeader('Cache-Control', 'no-store');
     return res.json({
       items: normalized,
