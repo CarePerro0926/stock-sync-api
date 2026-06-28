@@ -176,6 +176,7 @@ const insertAuditLog = async ({ actor_id = null, actor_username = null, action, 
  * Registra un nuevo usuario.
  * Valida el correo según el rol.
  */
+// POST /api/registro
 app.post('/api/registro', async (req, res) => {
   try {
     const body = req.body || {};
@@ -185,24 +186,32 @@ app.post('/api/registro', async (req, res) => {
       return respondError(res, 400, 'Faltan campos obligatorios');
     }
 
-    if (!['cliente', 'administrador'].includes(role)) {
-      return respondError(res, 400, 'Rol inválido. Debe ser "cliente" o "administrador".');
+    // Normalizar role y validar
+    const normalizedRole = String(role).toLowerCase();
+    if (!['cliente', 'administrador', 'auditor'].includes(normalizedRole)) {
+      return respondError(res, 400, 'Rol inválido. Debe ser "cliente", "administrador" o "auditor".');
     }
 
-    const isAdminRole = role === 'administrador';
-    const isClientRole = role === 'cliente';
-    const isStockSyncEmail = email.endsWith('@stocksync.com');
-    const isNotStockSyncEmail = !isStockSyncEmail;
+    // Reglas de dominio para cada rol (ajusta según tu política)
+    const isAdminRole = normalizedRole === 'administrador';
+    const isClientRole = normalizedRole === 'cliente';
+    const isAuditorRole = normalizedRole === 'auditor';
+    const isStockSyncEmail = String(email).toLowerCase().endsWith('@stocksync.com');
 
-    if (isAdminRole && isNotStockSyncEmail) {
+    if (isAdminRole && !isStockSyncEmail) {
       return respondError(res, 400, 'Los administradores deben usar correos @stocksync.com');
     }
     if (isClientRole && isStockSyncEmail) {
       return respondError(res, 400, 'Los clientes no pueden usar correos @stocksync.com');
     }
+    // Opcional: exigir dominio para auditores (quita si no aplica)
+    if (isAuditorRole && !isStockSyncEmail) {
+      return respondError(res, 400, 'Los auditores deben usar correos @stocksync.com');
+    }
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // Construir userData usando normalizedRole (IMPORTANTE)
     const userData = {
       nombres,
       apellidos,
@@ -212,7 +221,7 @@ app.post('/api/registro', async (req, res) => {
       email,
       username,
       pass: hashedPassword,
-      role,
+      role: normalizedRole,
     };
 
     const { data, error } = await supabaseAdmin
@@ -227,6 +236,21 @@ app.post('/api/registro', async (req, res) => {
         return respondError(res, 400, 'El correo o nombre de usuario ya están registrados');
       }
       return respondError(res, 500, 'Error al registrar usuario', error.message || String(error));
+    }
+
+    // Audit log opcional
+    try {
+      await insertAuditLog({
+        actor_id: req.user?.id || null,
+        actor_username: req.user?.username || null,
+        action: 'user_create',
+        target_table: 'usuarios',
+        target_id: data.id,
+        metadata: { new_data: data },
+        ip: req.ip
+      });
+    } catch (auditErr) {
+      console.warn('Audit log failed for user_create:', auditErr);
     }
 
     return res.status(201).json({
@@ -244,6 +268,7 @@ app.post('/api/registro', async (req, res) => {
     return respondError(res, 500, 'Error interno en el servidor', String(err));
   }
 });
+
 
 /**
  * POST /api/login
