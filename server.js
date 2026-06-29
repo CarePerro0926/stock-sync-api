@@ -262,10 +262,10 @@ app.post('/api/login', async (req, res) => {
 
     const identifier = email || username;
 
-    const queryUserFromTable = async (tableName) => {
+    const queryUserFromTable = async (qualifiedTableName) => {
       try {
         let query = supabaseAdmin
-          .from(tableName)
+          .from(qualifiedTableName)
           .select('id, email, username, pass, nombres, apellidos, role, deleted_at')
           .limit(1);
 
@@ -283,13 +283,17 @@ app.post('/api/login', async (req, res) => {
       }
     };
 
-    let usersResult = await queryUserFromTable('usuarios');
+    // Consultar explícitamente el schema public para evitar ambigüedades
+    let usersResult = await queryUserFromTable('public.usuarios');
 
+    // Si por alguna razón la tabla no existe en ese schema, intentar la vista users
     if (usersResult.error) {
-      usersResult = await queryUserFromTable('users');
+      console.warn('public.usuarios query error, intentando public.users:', usersResult.error);
+      usersResult = await queryUserFromTable('public.users');
     }
 
     if (usersResult.error) {
+      console.error('Error al consultar usuario en BD:', usersResult.error);
       return respondError(res, 500, 'Error al consultar usuario', usersResult.error.message || String(usersResult.error));
     }
 
@@ -303,8 +307,9 @@ app.post('/api/login', async (req, res) => {
       return res.status(403).json({ success: false, message: 'Usuario inhabilitado' });
     }
 
-    const storedHash = user.pass || null;
+    const storedHash = user.pass || user.password_hash || null;
     if (!storedHash) {
+      console.error('Usuario sin hash de contraseña:', { id: user.id, email: user.email });
       return res.status(401).json({ success: false, message: 'Credenciales inválidas' });
     }
 
