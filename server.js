@@ -11,7 +11,10 @@ import { createClient } from '@supabase/supabase-js';
 // rutas (añade audit.js aquí)
 import categoriasRoutes from './routes/categorias.js';
 import productosRoutes from './routes/productos.js';
+import authenticateJwt from './middlewares/authenticateJwt.js';
 import auditRoutes from './routes/audit.js';
+
+
 
 
 const app = express();
