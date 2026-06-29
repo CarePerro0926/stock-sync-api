@@ -76,6 +76,16 @@ export default function authenticateJwt(req, res, next) {
       raw: payload
     };
 
+    // Permitir rol 'auditor' para la ruta /api/audit-logs (solo lectura)
+    // Esto evita el 403 cuando el token tiene role: 'auditor'
+    if (req.path && req.path.startsWith('/api/audit-logs')) {
+      const allowed = ['administrador', 'auditor'];
+      if (!allowed.includes(req.user.role)) {
+        console.log('authenticateJwt -> Forbidden: insufficient role for audit-logs', req.user.role);
+        return res.status(403).json({ success: false, message: 'Forbidden: insufficient role' });
+      }
+    }
+
     // Log breve (no imprimir payload completo en producción)
     console.log('authenticateJwt ok user:', { id: req.user.id, role: req.user.role });
     console.log('--- AUTH CHECK END ---');
