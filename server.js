@@ -8,6 +8,12 @@ import jwt from 'jsonwebtoken';
 import axios from 'axios';
 import { createClient } from '@supabase/supabase-js';
 
+// rutas (añade audit.js aquí)
+import categoriasRoutes from './routes/categorias.js';
+import productosRoutes from './routes/productos.js';
+import auditRoutes from './routes/audit.js';
+
+
 const app = express();
 app.use(express.json());
 app.use(helmet());
@@ -25,6 +31,13 @@ app.use(
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   })
 );
+
+
+// --- REGISTRO DE RUTAS (pegar aquí) ---
+app.use('/api', categoriasRoutes);
+app.use('/api', productosRoutes);
+app.use('/api', auditRoutes);
+
 // --- FIN CONFIGURACIÓN CORS ---
 
 // Supabase
