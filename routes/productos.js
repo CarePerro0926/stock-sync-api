@@ -82,13 +82,14 @@ function applyCommonFilters(queryBuilder, { includeInactive, search, categoria, 
 }
 
 // CORRECCIÓN APLICADA: Se cambió '*' por '(.*)'
-router.options('(.*)', (req, res) => {
+router.options('/*', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', req.get('Origin') || '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cache-Control, Pragma');
   res.setHeader('Access-Control-Max-Age', '600');
   return res.sendStatus(204);
 });
+
 
 router.get('/', async (req, res) => {
   const DEFAULT_LIMIT = 20;
