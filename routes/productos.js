@@ -81,8 +81,8 @@ function applyCommonFilters(queryBuilder, { includeInactive, search, categoria, 
   return queryBuilder;
 }
 
-// OPTIONS preflight (inofensivo si ya tienes CORS global)
-router.options('*', (req, res) => {
+// CORRECCIÓN APLICADA: Se cambió '*' por '(.*)'
+router.options('(.*)', (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', req.get('Origin') || '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cache-Control, Pragma');
