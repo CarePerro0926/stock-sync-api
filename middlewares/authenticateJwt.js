@@ -17,6 +17,19 @@ export default function authenticateJwt(req, res, next) {
     console.log('Headers Authorization:', req.headers.authorization || '<no authorization header>');
     console.log('All raw headers keys:', Object.keys(req.headers).join(', '));
 
+    // Rutas públicas que deben saltarse (método + path exacto)
+    const PUBLIC_PATHS = [
+      { method: 'POST', path: '/api/login' },
+      { method: 'POST', path: '/api/registro' }, // si quieres permitir registro sin token
+      // añade aquí otras rutas públicas si las necesitas
+    ];
+
+    if (PUBLIC_PATHS.some(p => p.method === req.method && p.path === req.path)) {
+      console.log('authenticateJwt: ruta pública, saltando verificación JWT for', req.method, req.path);
+      console.log('--- AUTH CHECK END ---');
+      return next();
+    }
+
     // Soportar Authorization header o cookie "token"
     const authHeader = req.headers.authorization || req.headers.Authorization;
     const tokenFromHeader = authHeader && authHeader.startsWith('Bearer ') ? authHeader.split(' ')[1] : null;
@@ -77,7 +90,6 @@ export default function authenticateJwt(req, res, next) {
     };
 
     // Permitir rol 'auditor' para la ruta /api/audit-logs (solo lectura)
-    // Esto evita el 403 cuando el token tiene role: 'auditor'
     if (req.path && req.path.startsWith('/api/audit-logs')) {
       const allowed = ['administrador', 'auditor'];
       if (!allowed.includes(req.user.role)) {
