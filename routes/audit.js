@@ -1,55 +1,76 @@
 // routes/audit.js
 import express from 'express';
-import { createClient } from '@supabase/supabase-js';
 
 const router = express.Router();
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY;
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
-
-router.get('/audit-logs', async (req, res) => {
-  try {
-    const user = req.user || null;
-    const role = user?.role || user?.tokenPayload?.role || null;
-    if (!role || (role !== 'auditor' && role !== 'administrador')) {
-      return res.status(403).json({ success: false, message: 'Forbidden' });
+/**
+ * GET /api/proxy-audit-logs
+ * Query params: limit, offset, actor_id, action, since, until, order
+ * Requiere req.user (authenticateJwt) o cabecera x-admin-token válida.
+ */
+export default (supabaseAdmin, isAdminRequest, insertAuditLog) => {
+  // middleware local para permitir admin header o usuario autenticado
+  const allowAdminOrAuth = (req, res, next) => {
+    try {
+      if (isAdminRequest(req)) return next();
+      // si authenticateJwt ya se aplicó globalmente, req.user estará presente
+      if (req.user && req.user.id) return next();
+      return res.status(401).json({ success: false, message: 'No autorizado' });
+    } catch (err) {
+      return res.status(401).json({ success: false, message: 'No autorizado' });
     }
+  };
 
-    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 1000);
-    const offset = Math.max(Number(req.query.offset) || 0, 0);
-    const usuario = req.query.usuario ? String(req.query.usuario).trim() : null;
-    const accion = req.query.accion ? String(req.query.accion).trim() : null;
-    const desde = req.query.desde ? String(req.query.desde).trim() : null;
-    const hasta = req.query.hasta ? String(req.query.hasta).trim() : null;
+  // Ruta principal
+  router.get('/proxy-audit-logs', allowAdminOrAuth, async (req, res) => {
+    try {
+      const q = req.query || {};
+      const limit = Math.min(Number(q.limit) || 100, 1000);
+      const offset = Math.max(Number(q.offset) || 0, 0);
+      const actor_id = q.actor_id || null;
+      const action = q.action || null;
+      const since = q.since || null;   // ISO date
+      const until = q.until || null;   // ISO date
+      const order = (q.order || 'created_at').toString();
 
-    let qb = supabase
-      .from('audit_logs')
-      .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+      let query = supabaseAdmin
+        .from('audit_logs')
+        .select('id, actor_id, actor_username, action, target_table, target_id, reason, metadata, ip, created_at')
+        .order(order, { ascending: false })
+        .range(offset, offset + limit - 1);
 
-    if (usuario) qb = qb.ilike('actor_username', `%${usuario}%`);
-    if (accion) qb = qb.ilike('action', `%${accion}%`);
-    if (desde) qb = qb.gte('created_at', desde);
-    if (hasta) qb = qb.lte('created_at', hasta);
+      if (actor_id) query = query.eq('actor_id', actor_id);
+      if (action) query = query.eq('action', action);
+      if (since) query = query.gte('created_at', since);
+      if (until) query = query.lte('created_at', until);
 
-    const { data, count, error } = await qb;
+      const { data, error, count } = await query;
 
-    if (error) {
-      console.error('routes/audit supabase error:', error);
-      return res.status(500).json({ success: false, message: 'Error al obtener audit logs', error: error.message || String(error) });
+      if (error) {
+        console.error('proxy-audit-logs supabase error:', error);
+        return res.status(500).json({ success: false, message: 'Error al consultar audit logs', error: error.message || error });
+      }
+
+      // opcional: registrar que se consultaron logs (audit trail)
+      try {
+        await insertAuditLog({
+          actor_id: req.user?.id || null,
+          actor_username: req.user?.username || null,
+          action: 'audit_logs_read',
+          target_table: 'audit_logs',
+          metadata: { query: { limit, offset, actor_id, action, since, until } },
+          ip: req.ip
+        });
+      } catch (e) {
+        console.warn('Audit log insert failed for audit_logs_read:', e);
+      }
+
+      return res.status(200).json({ success: true, data: data || [], count: Array.isArray(data) ? data.length : 0 });
+    } catch (err) {
+      console.error('GET /proxy-audit-logs exception:', err);
+      return res.status(500).json({ success: false, message: 'Error interno', error: String(err) });
     }
+  });
 
-    return res.status(200).json({
-      success: true,
-      items: Array.isArray(data) ? data : (data ? [data] : []),
-      meta: { total: typeof count === 'number' ? count : (Array.isArray(data) ? data.length : 0), limit, offset }
-    });
-  } catch (err) {
-    console.error('routes/audit exception:', err);
-    return res.status(500).json({ success: false, message: 'Error interno', error: String(err) });
-  }
-});
-
-export default router;
+  return router;
+};
