@@ -1,4 +1,3 @@
-// middlewares/authenticateJwt.js
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET;
@@ -20,8 +19,7 @@ export default function authenticateJwt(req, res, next) {
     // Rutas públicas que deben saltarse (método + path exacto)
     const PUBLIC_PATHS = [
       { method: 'POST', path: '/api/login' },
-      { method: 'POST', path: '/api/registro' }, // si quieres permitir registro sin token
-      // añade aquí otras rutas públicas si las necesitas
+      { method: 'POST', path: '/api/registro' } // si permites registro público
     ];
 
     if (PUBLIC_PATHS.some(p => p.method === req.method && p.path === req.path)) {
