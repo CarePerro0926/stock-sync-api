@@ -81,14 +81,8 @@ function applyCommonFilters(queryBuilder, { includeInactive, search, categoria, 
   return queryBuilder;
 }
 
-// CORRECCIÓN: usar :path* en lugar de patrones inválidos para path-to-regexp
-router.options('/:path*', (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', req.get('Origin') || '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, Cache-Control, Pragma');
-  res.setHeader('Access-Control-Max-Age', '600');
-  return res.sendStatus(204);
-});
+// NOTA: Se eliminó el bloque router.options() aquí, ya que causaba conflictos 
+// con path-to-regexp y ya cuentas con un middleware CORS global en server.js.
 
 router.get('/', async (req, res) => {
   const DEFAULT_LIMIT = 20;
@@ -122,8 +116,7 @@ router.get('/', async (req, res) => {
   try {
     let tableQuery = supabase
       .from('productos')
-      .select(
-        `
+      .select(`
         id,
         product_id,
         nombre,
@@ -133,9 +126,7 @@ router.get('/', async (req, res) => {
         categoria,
         categoria_nombre,
         deleted_at
-      `,
-        { count: 'exact' }
-      )
+      `, { count: 'exact' })
       .order('nombre', { ascending: true });
 
     tableQuery = applyCommonFilters(tableQuery, { includeInactive, search, categoria, cantidadFilters });
@@ -152,9 +143,7 @@ router.get('/', async (req, res) => {
 
     const { data: cats } = await supabase.from('categorias').select('id, nombre');
     const catMap = {};
-    (cats || []).forEach(c => {
-      catMap[c.id] = c.nombre;
-    });
+    (cats || []).forEach(c => { catMap[c.id] = c.nombre; });
 
     const normalized = (data || []).map(row => {
       row.categoria_nombre = catMap[row.categoria_id] || 'Sin Categoría';
@@ -180,7 +169,6 @@ router.post('/', async (req, res) => {
     const created = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
     return res.status(201).json({ ok: true, message: 'Producto creado', data: created });
   } catch (err) {
-    console.error('[productos POST] error inesperado:', err);
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
@@ -194,7 +182,6 @@ router.put('/:id', async (req, res) => {
     const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
     return res.json({ ok: true, message: `Producto ${id} actualizado`, data: updated });
   } catch (err) {
-    console.error(`[productos PUT ${id}] error inesperado:`, err);
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
@@ -206,7 +193,6 @@ router.delete('/:id', async (req, res) => {
     if (error) return res.status(500).json({ message: `Error al eliminar producto ${id}`, error: error.message || String(error) });
     return res.json({ ok: true, message: `Producto ${id} eliminado` });
   } catch (err) {
-    console.error(`[productos DELETE ${id}] error inesperado:`, err);
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
@@ -221,7 +207,6 @@ async function fetchProductoFromView(id) {
     if (error || !Array.isArray(data) || data.length === 0) return null;
     return normalizeProductoRow(data[0]);
   } catch (err) {
-    console.error(`[fetchProductoFromView ${id}] error:`, err);
     return null;
   }
 }
@@ -240,7 +225,6 @@ router.patch('/:id/disable', async (req, res) => {
     const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
     return res.json({ ok: true, data: updated });
   } catch (err) {
-    console.error(`[productos PATCH disable ${id}] error inesperado:`, err);
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
@@ -259,7 +243,6 @@ router.patch('/:id/enable', async (req, res) => {
     const updated = Array.isArray(data) && data.length > 0 ? normalizeProductoRow(data[0]) : null;
     return res.json({ ok: true, data: updated });
   } catch (err) {
-    console.error(`[productos PATCH enable ${id}] error inesperado:`, err);
     return res.status(500).json({ message: 'Error inesperado', error: String(err) });
   }
 });
