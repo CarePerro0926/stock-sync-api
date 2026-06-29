@@ -262,10 +262,11 @@ app.post('/api/login', async (req, res) => {
 
     const identifier = email || username;
 
-    const queryUserFromTable = async (qualifiedTableName) => {
+    const queryUserFromTable = async (tableName) => {
       try {
+        // usar solo el nombre de la tabla; supabase-js no acepta 'schema.table' en .from()
         let query = supabaseAdmin
-          .from(qualifiedTableName)
+          .from(tableName)
           .select('id, email, username, pass, nombres, apellidos, role, deleted_at')
           .limit(1);
 
@@ -283,13 +284,13 @@ app.post('/api/login', async (req, res) => {
       }
     };
 
-    // Consultar explícitamente el schema public para evitar ambigüedades
-    let usersResult = await queryUserFromTable('public.usuarios');
+    // Llamar a la tabla por su nombre (sin schema)
+    let usersResult = await queryUserFromTable('usuarios');
 
-    // Si por alguna razón la tabla no existe en ese schema, intentar la vista users
+    // Si por alguna razón falla, intentar 'users' como fallback
     if (usersResult.error) {
-      console.warn('public.usuarios query error, intentando public.users:', usersResult.error);
-      usersResult = await queryUserFromTable('public.users');
+      console.warn('usuarios query error, intentando users fallback:', usersResult.error);
+      usersResult = await queryUserFromTable('users');
     }
 
     if (usersResult.error) {
