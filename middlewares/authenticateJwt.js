@@ -1,7 +1,19 @@
+// middlewares/authenticateJwt.js
 import jwt from 'jsonwebtoken';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 const ADMIN_API_TOKEN = process.env.VITE_ADMIN_API_TOKEN; // opcional, solo para debug seguro
+
+function isPublicRoute(req, publicPaths) {
+  const full = (req.originalUrl || '').split('?')[0]; // /api/login
+  const combined = `${req.baseUrl || ''}${req.path || ''}`; // /api + /login => /api/login or /login
+  const simple = req.path || ''; // /login or /api/login depending on mount
+
+  return publicPaths.some(p =>
+    p.method === req.method &&
+    (p.path === full || p.path === combined || p.path === simple)
+  );
+}
 
 export default function authenticateJwt(req, res, next) {
   try {
@@ -12,18 +24,19 @@ export default function authenticateJwt(req, res, next) {
 
     // DEBUG TEMPORAL - imprimir información mínima para depuración
     console.log('--- AUTH CHECK START ---');
-    console.log('Request method:', req.method, 'Request path:', req.path);
+    console.log('Request method:', req.method, 'originalUrl:', req.originalUrl, 'baseUrl:', req.baseUrl, 'path:', req.path);
     console.log('Headers Authorization:', req.headers.authorization || '<no authorization header>');
     console.log('All raw headers keys:', Object.keys(req.headers).join(', '));
 
     // Rutas públicas que deben saltarse (método + path exacto)
     const PUBLIC_PATHS = [
       { method: 'POST', path: '/api/login' },
-      { method: 'POST', path: '/api/registro' } // si permites registro público
+      { method: 'POST', path: '/api/registro' },
+      // si montas middleware en /api, también considerar '/login' y '/registro' (isPublicRoute lo cubre)
     ];
 
-    if (PUBLIC_PATHS.some(p => p.method === req.method && p.path === req.path)) {
-      console.log('authenticateJwt: ruta pública, saltando verificación JWT for', req.method, req.path);
+    if (isPublicRoute(req, PUBLIC_PATHS)) {
+      console.log('authenticateJwt: ruta pública, saltando verificación JWT for', req.method, req.originalUrl || req.path);
       console.log('--- AUTH CHECK END ---');
       return next();
     }
@@ -88,7 +101,7 @@ export default function authenticateJwt(req, res, next) {
     };
 
     // Permitir rol 'auditor' para la ruta /api/audit-logs (solo lectura)
-    if (req.path && req.path.startsWith('/api/audit-logs')) {
+    if (req.originalUrl && req.originalUrl.startsWith('/api/audit-logs')) {
       const allowed = ['administrador', 'auditor'];
       if (!allowed.includes(req.user.role)) {
         console.log('authenticateJwt -> Forbidden: insufficient role for audit-logs', req.user.role);
