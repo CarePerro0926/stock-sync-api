@@ -37,9 +37,18 @@ app.use(
 
 
 // --- REGISTRO DE RUTAS (pegar aquí) ---
-app.use('/api', categoriasRoutes);
-app.use('/api', productosRoutes);
-app.use('/api', auditRoutes);
+// --- REGISTRO DE RUTAS (pegar aquí) ---
+app.use('/api', categoriasRoutes);   // rutas públicas de categorías
+app.use('/api', productosRoutes);    // rutas públicas de productos
+
+// IMPORTANTE: aplicar authenticateJwt solo para las rutas que requieren auth
+// (auditRoutes necesita req.user)
+app.use('/api', authenticateJwt);    // a partir de aquí, las rutas /api requieren token
+
+app.use('/api', auditRoutes);        // ahora /api/audit-logs tendrá req.user disponible
+
+// Si tienes otras rutas que deben seguir públicas, muévelas arriba de authenticateJwt
+
 
 // --- FIN CONFIGURACIÓN CORS ---
 
