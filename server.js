@@ -94,55 +94,6 @@ app.use((req, res, next) => {
 });
 
 // --- MIDDLEWARES ---
-// authenticateJwt: valida token y que usuario no esté inhabilitado
-const authenticateJwt = async (req, res, next) => {
-  try {
-    const auth = req.headers.authorization || '';
-    if (!auth.startsWith('Bearer ')) return res.status(401).json({ success: false, message: 'No autorizado' });
-    const token = auth.split(' ')[1];
-    const secret = process.env.JWT_SECRET || process.env.SESSION_SECRET;
-    if (!secret) return res.status(500).json({ success: false, message: 'JWT secret no configurado en servidor' });
-
-    const payload = jwt.verify(token, secret);
-    if (!payload || !payload.sub) {
-      return res.status(401).json({ success: false, message: 'Token inválido' });
-    }
-
-    const { data, error } = await supabaseAdmin
-      .from('usuarios')
-      .select('id, deleted_at, role, email, username')
-      .eq('id', payload.sub)
-      .limit(1);
-
-    if (error) {
-      console.error('authenticateJwt supabase error:', error);
-      return res.status(500).json({ success: false, message: 'Error al validar usuario' });
-    }
-
-    if (!data || data.length === 0) {
-      return res.status(404).json({ success: false, message: 'Usuario no encontrado' });
-    }
-
-    const dbUser = data[0];
-    if (dbUser.deleted_at) {
-      return res.status(403).json({ success: false, message: 'Usuario inhabilitado' });
-    }
-
-    req.user = {
-      id: dbUser.id,
-      role: dbUser.role || payload.role || 'cliente',
-      email: dbUser.email || payload.email,
-      username: dbUser.username || payload.username,
-      tokenPayload: payload
-    };
-
-    return next();
-  } catch (err) {
-    console.error('authenticateJwt error:', err?.message || err);
-    return res.status(401).json({ success: false, message: 'Token inválido' });
-  }
-};
-
 // authenticateJwtAdmin: reusa authenticateJwt y exige role administrador
 const authenticateJwtAdmin = async (req, res, next) => {
   try {
