@@ -31,7 +31,7 @@ app.get('/api/categorias/public', async (req, res) => {
   try {
     const { data, error } = await supabaseAdmin
       .from('categorias')
-      .select('id, nombre, descripcion') // ajusta columnas que quieras exponer
+      .select('id,nombre') // columnas seguras que existen
       .is('deleted_at', null)
       .order('nombre', { ascending: true });
 
@@ -46,6 +46,7 @@ app.get('/api/categorias/public', async (req, res) => {
     return res.status(500).json({ success: false, message: 'Error interno', detail: String(err) });
   }
 });
+
 
 
 // --- FIN CONFIGURACIÓN CORS ---
