@@ -428,21 +428,14 @@ app.get('/api/usuarios', async (req, res) => {
 
 // --- RUTAS DE CATEGORÍAS ---
 
-/**
- * GET /api/categorias
- * Por defecto devuelve solo categorías activas (deleted_at IS NULL).
- * Si ?include_inactivos=true se devuelven todas.
- *
- * Devuelve directamente un array (compatibilidad con frontend).
- * Requiere authenticateJwt (logueado).
- */
-app.get('/api/categorias', authenticateJwt, async (req, res) => {
+// GET /api/categorias  (ahora pública, no requiere authenticateJwt)
+app.get('/api/categorias', async (req, res) => {
   try {
     const includeInactivos = String(req.query.include_inactivos || '').toLowerCase() === 'true';
 
     let query = supabaseAdmin
-      .from('categorias') // Asegúrate del nombre de la tabla
-      .select('id,nombre,deleted_at') // Ajusta los campos según tu tabla
+      .from('categorias')
+      .select('id,nombre') // columnas seguras que existen
       .order('nombre', { ascending: true });
 
     if (!includeInactivos) {
@@ -456,15 +449,17 @@ app.get('/api/categorias', authenticateJwt, async (req, res) => {
       return res.status(500).json({ success: false, message: 'Error al obtener categorías', error: error.message });
     }
 
-    // Registrar acción en auditoría (opcional)
+    // Registrar acción en auditoría solo si hay usuario autenticado (opcional)
     try {
-      await insertAuditLog({
-        actor_id: req.user.id,
-        actor_username: req.user.username,
-        action: 'categorias_list',
-        target_table: 'categorias',
-        ip: req.ip
-      });
+      if (req.user && req.user.id) {
+        await insertAuditLog({
+          actor_id: req.user.id,
+          actor_username: req.user.username,
+          action: 'categorias_list',
+          target_table: 'categorias',
+          ip: req.ip
+        });
+      }
     } catch (e) {
       console.warn('Audit log failed for categorias_list:', e);
     }
@@ -475,6 +470,7 @@ app.get('/api/categorias', authenticateJwt, async (req, res) => {
     return respondError(res, 500, 'Error interno', String(err));
   }
 });
+
 
 /**
  * GET /api/categorias/nombre/:nombre
@@ -754,7 +750,7 @@ app.patch('/api/categorias/nombre/:nombre/enable', authenticateJwtAdmin, async (
     const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
 
     if (!previousRow) {
-      return respondError(res, 404, 'Categoría no encontrada');
+      return respondError(res, 404, 'Categoría no encontrada');FIN RUTAS 
     }
 
     const { data, error } = await supabaseAdmin
