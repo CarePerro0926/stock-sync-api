@@ -26,28 +26,6 @@ app.use(
   })
 );
 
-// GET /api/categorias/public  (pública, no requiere authenticateJwt)
-app.get('/api/categorias/public', async (req, res) => {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('categorias')
-      .select('id,nombre') // columnas seguras que existen
-      .is('deleted_at', null)
-      .order('nombre', { ascending: true });
-
-    if (error) {
-      console.error('SUPABASE ERROR /api/categorias/public', error);
-      return res.status(500).json({ success: false, message: 'Error al obtener categorías', detail: error.message });
-    }
-
-    return res.status(200).json({ success: true, items: data || [] });
-  } catch (err) {
-    console.error('EXCEPTION /api/categorias/public', err);
-    return res.status(500).json({ success: false, message: 'Error interno', detail: String(err) });
-  }
-});
-
-
 
 // --- FIN CONFIGURACIÓN CORS ---
 
@@ -815,6 +793,30 @@ app.patch('/api/categorias/nombre/:nombre/enable', authenticateJwtAdmin, async (
     return respondError(res, 500, 'Error interno', String(err));
   }
 });
+
+
+// GET /api/categorias/public  (pública, no requiere authenticateJwt)
+app.get('/api/categorias/public', async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('categorias')
+      .select('id,nombre') // columnas seguras que existen
+      .is('deleted_at', null)
+      .order('nombre', { ascending: true });
+
+    if (error) {
+      console.error('SUPABASE ERROR /api/categorias/public', error);
+      return res.status(500).json({ success: false, message: 'Error al obtener categorías', detail: error.message });
+    }
+
+    return res.status(200).json({ success: true, items: data || [] });
+  } catch (err) {
+    console.error('EXCEPTION /api/categorias/public', err);
+    return res.status(500).json({ success: false, message: 'Error interno', detail: String(err) });
+  }
+});
+
+
 
 // --- FIN RUTAS DE CATEGORÍAS ---
 
