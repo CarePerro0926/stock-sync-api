@@ -25,6 +25,29 @@ app.use(
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
   })
 );
+
+// GET /api/categorias/public  (pública, no requiere authenticateJwt)
+app.get('/api/categorias/public', async (req, res) => {
+  try {
+    const { data, error } = await supabaseAdmin
+      .from('categorias')
+      .select('id, nombre, descripcion') // ajusta columnas que quieras exponer
+      .is('deleted_at', null)
+      .order('nombre', { ascending: true });
+
+    if (error) {
+      console.error('SUPABASE ERROR /api/categorias/public', error);
+      return res.status(500).json({ success: false, message: 'Error al obtener categorías', detail: error.message });
+    }
+
+    return res.status(200).json({ success: true, items: data || [] });
+  } catch (err) {
+    console.error('EXCEPTION /api/categorias/public', err);
+    return res.status(500).json({ success: false, message: 'Error interno', detail: String(err) });
+  }
+});
+
+
 // --- FIN CONFIGURACIÓN CORS ---
 
 // Supabase
@@ -1568,29 +1591,6 @@ app.get('/api/audit-logs', authenticateJwt, async (req, res) => {
     return res.status(500).json({ success: false, message: 'Error interno', error: String(err) });
   }
 });
-
-
-// GET /api/categorias/public  (pública, no requiere authenticateJwt)
-app.get('/api/categorias/public', async (req, res) => {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('categorias')
-      .select('id, nombre, descripcion') // ajusta columnas que quieras exponer
-      .is('deleted_at', null)
-      .order('nombre', { ascending: true });
-
-    if (error) {
-      console.error('GET /api/categorias/public supabase error:', error);
-      return res.status(500).json({ success: false, message: 'Error al obtener categorías' });
-    }
-
-    return res.status(200).json({ success: true, items: data || [] });
-  } catch (err) {
-    console.error('Exception GET /api/categorias/public:', err);
-    return res.status(500).json({ success: false, message: 'Error interno' });
-  }
-});
-
 
 
 
