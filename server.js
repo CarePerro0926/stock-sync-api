@@ -1526,6 +1526,51 @@ app.use((err, req, res, next) => {
   return respondError(res, 500, 'Error interno', String(err));
 });
 
+
+
+// GET /api/audit-logs
+// Requiere authenticateJwt y rol auditor
+app.get('/api/audit-logs', authenticateJwt, async (req, res) => {
+  try {
+    // Solo usuarios con rol auditor pueden consultar
+    const role = req.user?.role || req.user?.tokenPayload?.role;
+    if (!role || role !== 'auditor') {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+
+    const { usuario, accion, desde, hasta, limit = 25, offset = 0 } = req.query;
+    const maxLimit = Math.min(Number(limit) || 25, 1000);
+    const from = Number(offset) || 0;
+
+    let q = supabaseAdmin
+      .from('audit_logs')
+      .select('*', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, from + maxLimit - 1);
+
+    if (usuario) q = q.eq('actor_username', usuario);
+    if (accion) q = q.eq('action', accion);
+    if (desde) q = q.gte('created_at', desde);
+    if (hasta) q = q.lte('created_at', hasta);
+
+    const { data, error, count } = await q;
+    if (error) {
+      console.error('GET /api/audit-logs supabase error:', error);
+      return res.status(500).json({ success: false, message: 'Error interno', error: error.message || error });
+    }
+
+    return res.json({
+      items: data || [],
+      meta: { total: count ?? (Array.isArray(data) ? data.length : 0) }
+    });
+  } catch (err) {
+    console.error('GET /api/audit-logs exception:', err);
+    return res.status(500).json({ success: false, message: 'Error interno', error: String(err) });
+  }
+});
+
+
+
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
   console.log(`API server listening on port ${PORT}`);
