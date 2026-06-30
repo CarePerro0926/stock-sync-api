@@ -750,7 +750,7 @@ app.patch('/api/categorias/nombre/:nombre/enable', authenticateJwtAdmin, async (
     const previousRow = Array.isArray(prevData) && prevData.length ? prevData[0] : null;
 
     if (!previousRow) {
-      return respondError(res, 404, 'Categoría no encontrada');FIN RUTAS 
+      return respondError(res, 404, 'Categoría no encontrada');
     }
 
     const { data, error } = await supabaseAdmin
